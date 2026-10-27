@@ -7,9 +7,12 @@ Declarations are appended whenever a rule meets them; nothing needs a pre-pass.
 
 from __future__ import annotations
 
+import struct
 from dataclasses import dataclass, field
 
-from ..types import Ty
+from ..types import Kind, Ty
+
+PREFIX = {"pred": "p", "f32": "f", "f64": "fd", "b32": "r", "b64": "rd"}  # bank -> register name
 
 
 @dataclass(frozen=True)
@@ -22,13 +25,18 @@ class Reg:
 
 
 @dataclass(frozen=True)
-class Imm: # Const
+class Imm:  # Const
     value: int | float
     ty: Ty
 
     def __str__(self) -> str:
-        """Ints in decimal; floats as exact bit patterns (`0f3F800000`, `0d...`), never decimal."""
-        ...
+        if self.ty.kind is Kind.BITS:
+            return hex(int(self.value))
+        if not self.ty.is_float:
+            return str(int(self.value))
+        if self.ty.bits == 32:  # floats are written as exact bit patterns, never decimal
+            return "0f%08X" % struct.unpack(">I", struct.pack(">f", self.value))[0]
+        return "0d%016X" % struct.unpack(">Q", struct.pack(">d", self.value))[0]
 
 
 @dataclass(frozen=True)
@@ -43,12 +51,11 @@ class Sym:
 
 @dataclass(frozen=True)
 class Addr:
-    """`[base+offset]`, the offset in bytes."""
-
     base: Reg | Sym
-    offset: int = 0
+    offset: int = 0  # bytes
 
-    def __str__(self) -> str: ...
+    def __str__(self) -> str:
+        return f"[{self.base}{self.offset:+d}]" if self.offset else f"[{self.base}]"
 
 
 @dataclass(frozen=True)
@@ -57,7 +64,8 @@ class Vec:
 
     elems: tuple[Reg, ...]
 
-    def __str__(self) -> str: ...
+    def __str__(self) -> str:
+        return "{" + ", ".join(map(str, self.elems)) + "}"
 
 
 type Value = Reg | Imm

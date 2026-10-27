@@ -1,7 +1,7 @@
 """Printer: PtxModule -> text. Layout only; every decision was made upstream."""
 
 from ..errors import InvalidKernel
-from .code import Item, PtxModule
+from .code import PREFIX, Item, Label, PtxModule
 
 
 def render(m: PtxModule) -> str:
@@ -22,25 +22,30 @@ def render(m: PtxModule) -> str:
 
 
 def header(m: PtxModule) -> list[str]:
-    """`.version`, `.target`, `.address_size 64`."""
-    ...
+    return [f".version {m.version}", f".target {m.target}", ".address_size 64", ""]
 
 
 def shared_decls(m: PtxModule) -> list[str]:
-    """`.shared .align A .b8 name[N];`, or for the pool `.extern .shared .align 16 .b8 name[];`."""
-    ...
+    return [
+        f".extern .shared .align {s.align} .b8 {s.name}[];"
+        if s.extern
+        else f".shared .align {s.align} .b8 {s.name}[{s.nbytes}];"
+        for s in m.shared
+    ]
 
 
 def signature(m: PtxModule) -> list[str]:
-    """`.visible .entry name(` one `.param .u64 name` per line `)`."""
-    ...
+    params = ",\n".join(f"\t.param .{p.ty.ptx} {p.name}" for p in m.params)
+    return [f".visible .entry {m.entry}(", params, ")"]
 
 
 def register_decls(m: PtxModule) -> list[str]:
-    """One `.reg .{bank} %{prefix}<count+1>;` per bank in use."""
-    ...
+    return [f"\t.reg .{bank} %{PREFIX[bank]}<{m.registers[bank] + 1}>;" for bank in PREFIX if bank in m.registers]
 
 
 def item(i: Item) -> str:
-    """A label as `name:`; an instruction as `\\t[@[!]%p ]opcode a, b, c;`."""
-    ...
+    if isinstance(i, Label):
+        return f"{i.name}:"
+    guard = f"@{'!' if i.negate else ''}{i.guard} " if i.guard else ""
+    operands = ", ".join(map(str, i.operands))
+    return f"\t{guard}{i.opcode}{' ' + operands if operands else ''};"

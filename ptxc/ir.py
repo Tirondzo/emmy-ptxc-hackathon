@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .types import Ty
+from .errors import InvalidKernel, Unsupported
+from .types import Ty, ty_of
 
 if TYPE_CHECKING:  # annotations only: ptxc still imports without emmy installed
     from emmy.compiler.dtype import DataType
@@ -29,25 +32,27 @@ def kind(node: Node) -> str:
 
 
 def extent(axis: Axis) -> int:
-    """`Axis.extent.as_static()`. Every problem is static; `is_static` false -> Unsupported."""
-    ...
+    if not axis.extent.is_static:
+        raise Unsupported(f"symbolic extent of axis {axis.name!r}")
+    return axis.extent.as_static()
 
 
 def ty(dtype: DataType | str | None) -> Ty | None:
-    """A DataType, or the C spelling Smem uses ("float"), -> Ty. None means "infer it"."""
-    ...
+    """A DataType, or the C spelling Smem uses ("float"); None means "infer it"."""
+    if dtype is None:
+        return None
+    return ty_of(dtype if isinstance(dtype, str) else dtype.name)
 
 
 def op_name(op: ElementwiseImpl) -> str:
-    """ElementwiseImpl -> its name: "add", "maximum", "exp"."""
-    ...
+    return op.name
 
 
 def op_identity(op: ElementwiseImpl) -> float:
-    """`ElementwiseImpl.identity`, the neutral element as emmy defines it; `has_identity`
-    false -> InvalidKernel.
-    """
-    ...
+    """emmy's neutral element: maximum is -1e30, not -inf, so inf - inf never appears."""
+    if not op.has_identity:
+        raise InvalidKernel(f"{op.name} has no identity to seed with")
+    return op.identity
 
 
 # ---- the launch contract ------------------------------------------------------------
@@ -67,7 +72,7 @@ class Buffer:
     @property
     def strides(self) -> tuple[int, ...]:
         """Row-major element strides, the last axis fastest."""
-        ...
+        return tuple(math.prod(self.shape[i + 1 :]) for i in range(len(self.shape)))
 
 
 @dataclass(frozen=True)
@@ -78,8 +83,9 @@ class Launch:
 
     @property
     def threads(self) -> int:
-        """grid.x * block.x. Launches are one-dimensional; anything else -> Unsupported."""
-        ...
+        if self.grid[1:] != (1, 1) or self.block[1:] != (1, 1):
+            raise Unsupported("multi-dimensional launch")
+        return self.grid[0] * self.block[0]
 
 
 @dataclass(frozen=True)
@@ -91,13 +97,35 @@ class Kernel:
     target: str = "sm_89"
 
     def buffer(self, name: str) -> Buffer:
-        """The parameter buffer called `name`; not a parameter -> InvalidKernel."""
-        ...
+        for buf in self.params:
+            if buf.name == name:
+                return buf
+        raise InvalidKernel(f"buffer {name!r} is not a kernel parameter")
 
     @classmethod
     def load(cls, ir_path: Path) -> Kernel:
-        """`Graph.from_dict` on the IR, meta.json beside it, the kernel spec matched by entry name.
-        One KernelOp per file; several -> Unsupported
-        Non-empty `serial` axes -> Unsupported.
-        """
-        ...
+        """The IR through `Graph.from_dict`, meta.json beside it, one KernelOp per file."""
+        from emmy.compiler.graph import Graph  # the one runtime import of emmy
+
+        graph = Graph.from_dict(json.loads(ir_path.read_text()))
+        kernels = [node.op for node in graph.nodes.values() if kind(node.op) == "KernelOp"]
+        if len(kernels) != 1:
+            raise Unsupported(f"{len(kernels)} KernelOps in one file")
+        (op,) = kernels
+        if op.serial:
+            raise Unsupported("serial axes")
+
+        meta = json.loads(ir_path.with_name("meta.json").read_text())
+        spec = next((k for k in meta["kernels"] if k["entry"] == op.name), None)
+        if spec is None:
+            raise InvalidKernel(f"meta.json has no kernel with entry {op.name!r}")
+        args = {a["name"]: a for a in spec["args"]}
+        return cls(
+            entry=op.name,
+            body=op.body,
+            params=tuple(
+                Buffer(n, tuple(args[n]["shape"]), ty_of(args[n]["dtype"]), bool(args[n].get("output")))
+                for n in spec["arg_order"]
+            ),
+            launch=Launch(tuple(spec["grid"]), tuple(spec["block"]), spec.get("smem_bytes", 0)),
+        )
