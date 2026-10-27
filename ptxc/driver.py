@@ -11,6 +11,6 @@ from .types import U64
 def compile_file(ir_path: str | Path) -> str:
     kernel = Kernel.load(Path(ir_path))
     params = tuple(Param(buf.param_name, U64) for buf in kernel.params)
-    module = PtxModule(kernel.entry, params, kernel.target)
-    Lowerer(kernel, PtxBuilder(module)).run()
-    return render(module)
+    b = PtxBuilder(PtxModule(kernel.entry, params, kernel.target))
+    Lowerer(kernel, b).run()
+    return render(b.finish())

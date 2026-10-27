@@ -44,6 +44,12 @@ def ty(dtype: DataType | str | None) -> Ty | None:
     return ty_of(dtype if isinstance(dtype, str) else dtype.name)
 
 
+def plus(a: Expr, b: Expr) -> Expr:
+    from emmy.compiler.ir.expr import BinaryExpr
+
+    return BinaryExpr(op="+", left=a, right=b)
+
+
 def op_name(op: ElementwiseImpl) -> str:
     return op.name
 
@@ -56,6 +62,11 @@ def op_identity(op: ElementwiseImpl) -> float:
 
 
 # ---- the launch contract ------------------------------------------------------------
+
+
+def row_major(shape: Sequence[int]) -> tuple[int, ...]:
+    """Element strides, the last axis fastest."""
+    return tuple(math.prod(shape[i + 1 :]) for i in range(len(shape)))
 
 
 @dataclass(frozen=True)
@@ -71,8 +82,7 @@ class Buffer:
 
     @property
     def strides(self) -> tuple[int, ...]:
-        """Row-major element strides, the last axis fastest."""
-        return tuple(math.prod(self.shape[i + 1 :]) for i in range(len(self.shape)))
+        return row_major(self.shape)
 
 
 @dataclass(frozen=True)

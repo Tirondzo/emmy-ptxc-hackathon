@@ -63,6 +63,13 @@ def divide(b: PtxBuilder, ty: Ty, x: Value, y: Value) -> Value:
     return b.op("div.rn" if ty.is_float else "div", ty, x, y)
 
 
+@recipe("remainder", "mod")
+def remainder(b: PtxBuilder, ty: Ty, x: Value, y: Value) -> Value:
+    if ty.is_float:
+        raise Unsupported("float remainder")
+    return b.op("rem", ty, x, y)
+
+
 @recipe("maximum")
 def maximum(b: PtxBuilder, ty: Ty, x: Value, y: Value) -> Value:
     return b.op("max", ty, x, y)

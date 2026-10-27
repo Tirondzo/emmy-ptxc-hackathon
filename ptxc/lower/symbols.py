@@ -18,6 +18,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Literal
 
+from ..errors import InvalidKernel
+from ..ir import row_major
 from ..ptx import Reg, Value
 from ..types import Ty
 
@@ -47,6 +49,10 @@ class Array:
     space: Literal["global", "shared"]
     offset: int = 0  # byte offset inside the pool, when shared memory is pooled
 
+    @property
+    def strides(self) -> tuple[int, ...]:
+        return row_major(self.shape)
+
 
 type Symbol = Bound | Variable | Array
 
@@ -57,17 +63,23 @@ class Symbols:
 
     @contextmanager
     def scope(self) -> Iterator[None]:
-        """Bindings made inside are dropped on exit; outer bindings stay visible."""
-        ...
+        self._scopes = self._scopes.new_child()
+        try:
+            yield
+        finally:
+            self._scopes = self._scopes.parents
 
-    def bind(self, name: str, symbol: Symbol) -> None: ...
+    def bind(self, name: str, symbol: Symbol) -> None:
+        self._scopes[name] = symbol
 
-    def get(self, name: str) -> Symbol | None: ...
+    def get(self, name: str) -> Symbol | None:
+        return self._scopes.get(name)
 
     def local(self, name: str) -> bool:
         """Bound in the innermost scope: rebinding it is straight-line and safe."""
-        ...
+        return name in self._scopes.maps[0]
 
     def lookup(self, name: str) -> Symbol:
-        """Unbound -> InvalidKernel: a name read before it is defined."""
-        ...
+        if (symbol := self.get(name)) is None:
+            raise InvalidKernel(f"{name!r} is read before it is defined")
+        return symbol
