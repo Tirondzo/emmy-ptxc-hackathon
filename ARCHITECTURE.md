@@ -31,10 +31,15 @@ leave open are pinned once in `ops.py`.
 
 ## Contracts
 
-- **Emit returns an operand.** `expr.value`, `Lowerer.apply` and the builder's `op` / `cvt` /
+- **The context is ambient.** `with PtxBuilder(module), Lowering(kernel):` in the driver
+  makes the module the target of every emission and the kernel the source of every name,
+  through a `ContextVar` (scoped, reset on exit, per thread). The verbs are plain functions
+  over it: `emit`, `op`, `cvt`, `if_`, `for_` from `ptx`; `read`, `assign`, `array`, `scope`,
+  `lower` from `lower`. Emission is eager: nothing reads the context after the `with` closes.
+- **Emit returns an operand.** `expr.value`, `ops.apply` and the builder's `op` / `cvt` /
   `setp` return a typed `Reg` or `Imm`. Callers never care how a value was produced, and
   constants fold on the way up: `expr.linear` turns `(a0 * 4) + 3` into a `[base+12]`
-  displacement.
+  displacement. A type applied to a number is an immediate: `INDEX(4)`, `ty(0)`.
 - **One rule per node kind.** `@rule("Kind")` in `lower/{compute,control,block}.py`. An
   unknown kind, op, field value or dtype raises `Unsupported` compilation error.
 - **Rebinding vs mutation.** SSA names are `Bound` and rebound freely. Assume `Load`, `Assign`, `Let` are bound to SSA. An SSA name redefined from inside a nested block is `InvalidKernel`. We trust the IR's `Accum` / `Init` marks instead of analysing data flow.
@@ -50,7 +55,7 @@ leave open are pinned once in `ops.py`.
 | Accumulator seed | a `seed=True` loop seeds the Accums of its *immediate* body (through Cond, not nested loops), in the enclosing scope, before opening its own | `control.seed_accumulators` |
 | Accum | `name <- op(base or name, value)`: online softmax rescales the accumulator and passes it as `base` | `compute.accum` |
 | Max identity | emmy's `-1e30`, not `-inf`: avoids `inf - inf = NaN` in online softmax | `ir.op_identity` |
-| Implicit names | `lane`, `warp` bound in the prologue | `Lowerer.prologue` |
+| Implicit names | `lane`, `warp` bound in the prologue | `lowerer.prologue` |
 | Shared memory | `smem_bytes > 0` -> one `.extern` pool carved by a running cursor; else static arrays | `block.smem` |
 | Combines | `combine_states` instantiated per step in a fresh scope with `state_b` bound; its Assigns mutate the states | `block.combine` |
 | TreeHalve | halving tree, barrier outside the branch, root broadcast to every thread | `block.tree_halve` |
@@ -62,8 +67,8 @@ leave open are pinned once in `ops.py`.
 |---|---|
 | an elementwise op | one `@recipe("name")` in `ops.py`, composing others by calling them |
 | a node kind | one `@rule("Kind")` in the matching `lower/` module |
-| a dtype | a bank in `Ty.bank` and `PREFIX`, conversions in `PtxBuilder.cvt` |
-| a kernel-wide value | bind it in `Lowerer.prologue` |
+| a dtype | a bank in `Ty.bank` and `PREFIX`, conversions in `builder.cvt` |
+| a kernel-wide value | bind it in `lowerer.prologue` |
 
 ## Deferred, on purpose
 
@@ -74,3 +79,7 @@ Each needs a concrete case before it earns its place:
 - several `KernelOp`s per file (their shared arrays would need entry-qualified names);
 - 16-bit dtypes, swizzled shared layouts, `aux_threads`, `serial` axes, and the starred
   nodes of the IR reference (TMA, mbarrier, tensor-core fragments). All raise `Unsupported`.
+
+## Useful links
+
+https://docs.nvidia.com/cuda/parallel-thread-execution/#instruction-set

@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import struct
 from dataclasses import dataclass
 from enum import Enum
 
@@ -35,6 +38,25 @@ class Ty:
         if self.kind is Kind.PRED:
             return "pred"
         return f"{'f' if self.is_float else 'b'}{self.bits}"
+
+    def __call__(self, value: int | float) -> Imm:
+        """A typed immediate: `INDEX(4)`, `B32(0x1f)`, `ty(0)`."""
+        return Imm(value, self)
+
+
+@dataclass(frozen=True)
+class Imm:  # Const
+    value: int | float
+    ty: Ty
+
+    def __str__(self) -> str:
+        if self.ty.kind is Kind.BITS:
+            return hex(int(self.value))
+        if not self.ty.is_float:
+            return str(int(self.value))
+        if self.ty.bits == 32:  # floats are written as exact bit patterns, never decimal
+            return "0f%08X" % struct.unpack(">I", struct.pack(">f", self.value))[0]
+        return "0d%016X" % struct.unpack(">Q", struct.pack(">d", self.value))[0]
 
 
 PRED = Ty(Kind.PRED, 1)

@@ -1,5 +1,22 @@
-from .builder import Branch, PtxBuilder
-from .code import Addr, Imm, Instr, Item, Label, Operand, Param, PtxModule, Reg, Shared, Sym, Value, Vec, opcode
+from .builder import (
+    Branch,
+    PtxBuilder,
+    barrier,
+    bitcast,
+    builder,
+    cvt,
+    emit,
+    for_,
+    if_,
+    label,
+    materialize,
+    mov,
+    op,
+    place,
+    reg,
+    setp,
+)
+from .code import Addr, Imm, Instr, Item, Label, Operand, Param, PtxModule, Reg, Shared, Sym, Value, Vec, dotted
 from .printer import render
 
 __all__ = [
@@ -18,6 +35,20 @@ __all__ = [
     "Sym",
     "Value",
     "Vec",
-    "opcode",
+    "barrier",
+    "bitcast",
+    "builder",
+    "cvt",
+    "dotted",
+    "emit",
+    "for_",
+    "if_",
+    "label",
+    "materialize",
+    "mov",
+    "op",
+    "place",
+    "reg",
     "render",
+    "setp",
 ]

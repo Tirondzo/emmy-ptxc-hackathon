@@ -1,24 +1,28 @@
-"""Lowerer: the statement visitor, the main flow of the compiler.
+"""The lowering: the statement visitor, the main flow of the compiler.
 
-Holds what every rule shares (the kernel, the builder, the symbol table) and dispatches
-each statement to its rule. Attribute flow: inherited top-down (kernel facts, the current
-scope), synthesized bottom-up (operands returned by `expr.value` and `apply`).
+`with Lowering(kernel):` makes the kernel's names and launch the context of every function
+below, the way `with PtxBuilder(module):` makes the module the target of every emission.
+Rules read the IR top-down and get operands back bottom-up (`expr.value`, `ops.apply`).
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
+from contextlib import AbstractContextManager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 
-from .. import ir, ops
+from .. import ir
 from ..errors import InvalidKernel, Unsupported
 from ..ir import Body, Kernel, Node
-from ..ptx import Addr, Imm, PtxBuilder, Reg, Sym, Value
-from ..types import B32, INDEX, U32, U64, Ty
-from .symbols import Array, Bound, Symbols, Variable
+from ..ptx import Addr, Reg, Sym, Value, cvt, mov, op, reg
+from ..types import B32, INDEX, U32, U64
+from .symbols import Array, Bound, Symbol, Symbols, Variable
 
-type Rule = Callable[["Lowerer", Node], None]
+type Rule = Callable[[Node], None]
 
 RULES: dict[str, Rule] = {}
+_current: ContextVar[Lowering] = ContextVar("lowering")
 
 
 def rule(*kinds: str) -> Callable[[Rule], Rule]:
@@ -30,90 +34,107 @@ def rule(*kinds: str) -> Callable[[Rule], Rule]:
     return register
 
 
-class Lowerer:
-    def __init__(self, kernel: Kernel, b: PtxBuilder) -> None:
-        self.kernel = kernel
-        self.b = b
-        self.syms = Symbols()
-        self.smem_used = 0  # bytes carved from the pool so far, when shared memory is pooled
+@dataclass
+class Lowering:
+    kernel: Kernel
+    syms: Symbols = field(default_factory=Symbols)
+    smem_used: int = 0  # bytes carved from the pool so far, when shared memory is pooled
 
-    def run(self) -> None:
-        self.prologue()
-        self.block(self.kernel.body)
+    def __enter__(self) -> Lowering:
+        self._token = _current.set(self)
+        return self
 
-    def prologue(self) -> None:
-        """Parameters -> global Arrays, plus `lane` and `warp`, which the IR reads but never declares."""
-        for buf in self.kernel.params:
-            param = self.b.op("ld.param", U64, Addr(Sym(buf.param_name)))
-            base = self.b.op("cvta.to.global", U64, param)
-            self.syms.bind(buf.name, Array(buf.name, base, buf.ty, buf.shape, "global"))
-        tid = self.b.op("mov", U32, Sym("%tid.x"))
-        lane = self.b.op("and", B32, tid, Imm(31, B32))
-        warp = self.b.op("shr", U32, tid, Imm(5, U32))
-        self.syms.bind("lane", Bound(self.b.cvt(lane, INDEX)))
-        self.syms.bind("warp", Bound(self.b.cvt(warp, INDEX)))
+    def __exit__(self, *exc: object) -> None:
+        _current.reset(self._token)
 
-    def block(self, body: Body) -> None:
-        for node in body:
-            self.stmt(node)
 
-    def stmt(self, node: Node) -> None:
+def lowering() -> Lowering:
+    return _current.get()
+
+
+def prologue() -> None:
+    """Parameters -> global Arrays, plus `lane` and `warp`, which the IR reads but never declares."""
+    for buf in lowering().kernel.params:
+        param = op("ld.param", U64, Addr(Sym(buf.param_name)))
+        base = op("cvta.to.global", U64, param)
+        bind(buf.name, Array(buf.name, base, buf.ty, buf.shape, "global"))
+    tid = op("mov", U32, Sym("%tid.x"))
+    lane = op("and", B32, tid, B32(31))
+    warp = op("shr", U32, tid, U32(5))
+    bind("lane", Bound(cvt(lane, INDEX)))
+    bind("warp", Bound(cvt(warp, INDEX)))
+
+
+def lower(body: Body) -> None:
+    for node in body:
         if (k := ir.kind(node)) not in RULES:
             raise Unsupported(f"statement {k}")
-        RULES[k](self, node)
+        RULES[k](node)
 
-    # ---- names -------------------------------------------------------------------
 
-    def read(self, name: str) -> Value:
-        match self.syms.lookup(name):
-            case Bound(value):
-                return value
-            case Variable(reg):
-                return reg
-            case _:
-                raise InvalidKernel(f"{name!r} is a buffer, not a value")
+# ---- names -------------------------------------------------------------------
 
-    def declare(self, name: str, init: Value) -> Reg:
-        """A fresh Variable holding `init`, bound in the innermost scope."""
-        reg = self.b.reg(init.ty)
-        self.b.mov(reg, init)
-        self.syms.bind(name, Variable(reg))
-        return reg
 
-    def assign(self, name: str, value: Value) -> None:
-        """Variable -> `mov` into its register. Unbound, or bound in the innermost scope ->
-        rebind as Bound. Bound in an enclosing scope -> InvalidKernel.
+def scope() -> AbstractContextManager[None]:
+    return lowering().syms.scope()
 
-        The IR is trusted to be SSA. A name redefined from inside a nested block (a loop
-        body, a Cond branch, a combine instantiation) is either loop-carried state, which
-        emmy marks with Accum or Init, or a value defined on one path only. Rebinding it
-        would silently read a stale register, so the compiler refuses instead of analysing
-        data flow.
-        """
-        match self.syms.get(name):
-            case Variable(reg):
-                if value != reg:  # TODO: the producing instruction could target `reg` directly; ignored for now
-                    self.b.mov(reg, value)
-            case None:
-                self.syms.bind(name, Bound(value))
-            case _ if self.syms.local(name):
-                self.syms.bind(name, Bound(value))
-            case _:
-                raise InvalidKernel(f"{name!r} is redefined from a nested block")
 
-    def seed(self, name: str, value: Value) -> None:
-        """Loop-carried state at its start value: assign if already a Variable, else declare."""
-        if isinstance(self.syms.get(name), Variable):
-            self.assign(name, value)
-        else:
-            self.declare(name, value)
+def bind(name: str, symbol: Symbol) -> None:
+    lowering().syms.bind(name, symbol)
 
-    def array(self, name: str) -> Array:
-        match self.syms.lookup(name):
-            case Array() as arr:
-                return arr
-            case _:
-                raise InvalidKernel(f"{name!r} is not a buffer")
 
-    def apply(self, op: Node, ty: Ty, args: Sequence[Value]) -> Value:
-        return ops.apply(self.b, ir.op_name(op), ty, args)
+def read(name: str) -> Value:
+    match lowering().syms.lookup(name):
+        case Bound(value):
+            return value
+        case Variable(reg=r):
+            return r
+        case _:
+            raise InvalidKernel(f"{name!r} is a buffer, not a value")
+
+
+def declare(name: str, init: Value) -> Reg:
+    """A fresh Variable holding `init`, bound in the innermost scope."""
+    r = reg(init.ty)
+    mov(r, init)
+    bind(name, Variable(r))
+    return r
+
+
+def assign(name: str, value: Value) -> None:
+    """Variable -> `mov` into its register. Unbound, or bound in the innermost scope ->
+    rebind as Bound. Bound in an enclosing scope -> InvalidKernel.
+
+    The IR is trusted to be SSA. A name redefined from inside a nested block (a loop
+    body, a Cond branch, a combine instantiation) is either loop-carried state, which
+    emmy marks with Accum or Init, or a value defined on one path only. Rebinding it
+    would silently read a stale register, so the compiler refuses instead of analysing
+    data flow.
+    """
+    syms = lowering().syms
+    match syms.get(name):
+        case Variable(reg=r):
+            if value != r:  # TODO: the producing instruction could target `r` directly; ignored for now
+                mov(r, value)
+        case None:
+            syms.bind(name, Bound(value))
+        case _ if syms.local(name):
+            syms.bind(name, Bound(value))
+        case _:
+            raise InvalidKernel(f"{name!r} is redefined from a nested block")
+
+
+def seed(name: str, value: Value) -> None:
+    """Loop-carried state at its start value: assign if already a Variable, else declare."""
+    if isinstance(lowering().syms.get(name), Variable):
+        assign(name, value)
+    else:
+        declare(name, value)
+
+
+def array(name: str) -> Array:
+    match lowering().syms.lookup(name):
+        case Array() as arr:
+            return arr
+        case _:
+            raise InvalidKernel(f"{name!r} is not a buffer")

@@ -7,10 +7,9 @@ Declarations are appended whenever a rule meets them; nothing needs a pre-pass.
 
 from __future__ import annotations
 
-import struct
 from dataclasses import dataclass, field
 
-from ..types import Kind, Ty
+from ..types import Imm, Ty
 
 PREFIX = {"pred": "p", "f32": "f", "f64": "fd", "b32": "r", "b64": "rd"}  # bank -> register name
 
@@ -22,21 +21,6 @@ class Reg:
 
     def __str__(self) -> str:
         return f"%{self.name}"
-
-
-@dataclass(frozen=True)
-class Imm:  # Const
-    value: int | float
-    ty: Ty
-
-    def __str__(self) -> str:
-        if self.ty.kind is Kind.BITS:
-            return hex(int(self.value))
-        if not self.ty.is_float:
-            return str(int(self.value))
-        if self.ty.bits == 32:  # floats are written as exact bit patterns, never decimal
-            return "0f%08X" % struct.unpack(">I", struct.pack(">f", self.value))[0]
-        return "0d%016X" % struct.unpack(">Q", struct.pack(">d", self.value))[0]
 
 
 @dataclass(frozen=True)
@@ -110,9 +94,10 @@ class PtxModule:
     version: str = "8.0"  # sm_89 needs PTX ISA 7.8 or later
     shared: list[Shared] = field(default_factory=list)
     body: list[Item] = field(default_factory=list)
-    registers: dict[str, int] = field(default_factory=dict)  # bank -> count, set by finish()
+    registers: dict[str, int] = field(default_factory=dict)  # bank -> count, set when the builder exits
 
 
-def opcode(*parts: str | None) -> str:
-    """Join opcode parts, dropping absent modifiers: opcode("add", None, "f32") == "add.f32"."""
+def dotted(*parts: str | None) -> str:
+    """An opcode with an optional modifier: dotted("ld", space, None, "f32") == "ld.global.f32".
+    Fixed shapes are spelled as f-strings instead."""
     return ".".join(p for p in parts if p)
