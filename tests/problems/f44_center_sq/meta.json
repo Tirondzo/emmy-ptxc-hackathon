@@ -1,0 +1,66 @@
+{
+ "id": "f44_center_sq",
+ "code": "x = torch.randn(64, 256); (x - x.mean(-1, keepdim=True)) ** 2",
+ "rtol": 0.001,
+ "atol": 0.0001,
+ "graph_inputs": [
+  "x"
+ ],
+ "graph_outputs": [
+  "pow_1"
+ ],
+ "kernels": [
+  {
+   "node": "pow_1",
+   "entry": "k_mean_86a931",
+   "arg_order": [
+    "mean_count",
+    "x",
+    "pow_1"
+   ],
+   "grid": [
+    64,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "mean_count",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      256.0
+     ]
+    },
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      64,
+      256
+     ],
+     "seed": 0
+    },
+    {
+     "name": "pow_1",
+     "dtype": "f32",
+     "shape": [
+      64,
+      256
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

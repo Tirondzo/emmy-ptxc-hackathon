@@ -1,0 +1,92 @@
+{
+ "id": "a21_batched",
+ "code": "q = torch.randn(2, 64, 32); kt = torch.randn(2, 32, 64); v = torch.randn(2, 64, 32); torch.bmm(torch.softmax(torch.bmm(q, kt) / 5.656854, dim=-1), v)",
+ "rtol": 0.001,
+ "atol": 0.0001,
+ "graph_inputs": [
+  "q",
+  "kt",
+  "v"
+ ],
+ "graph_outputs": [
+  "bmm_1"
+ ],
+ "kernels": [
+  {
+   "node": "bmm_1",
+   "entry": "k_matmul_softmax_reduce_7985c7",
+   "arg_order": [
+    "div_c1",
+    "q",
+    "kt",
+    "v",
+    "bmm_1"
+   ],
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "div_c1",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      5.656854
+     ]
+    },
+    {
+     "name": "q",
+     "dtype": "f32",
+     "shape": [
+      2,
+      64,
+      32
+     ],
+     "seed": 0
+    },
+    {
+     "name": "kt",
+     "dtype": "f32",
+     "shape": [
+      2,
+      32,
+      64
+     ],
+     "seed": 1
+    },
+    {
+     "name": "v",
+     "dtype": "f32",
+     "shape": [
+      2,
+      64,
+      32
+     ],
+     "seed": 2
+    },
+    {
+     "name": "bmm_1",
+     "dtype": "f32",
+     "shape": [
+      2,
+      64,
+      32
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

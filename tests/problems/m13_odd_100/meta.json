@@ -1,0 +1,68 @@
+{
+ "id": "m13_odd_100",
+ "code": "torch.randn(100, 100) @ torch.randn(100, 100)",
+ "rtol": 0.001,
+ "atol": 0.001,
+ "graph_inputs": [
+  "x0",
+  "x1"
+ ],
+ "graph_outputs": [
+  "matmul"
+ ],
+ "kernels": [
+  {
+   "node": "matmul",
+   "entry": "k_matmul",
+   "arg_order": [
+    "x1",
+    "x0",
+    "matmul"
+   ],
+   "grid": [
+    5,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [
+    "matmul"
+   ],
+   "args": [
+    {
+     "name": "x1",
+     "dtype": "f32",
+     "shape": [
+      100,
+      100
+     ],
+     "seed": 1
+    },
+    {
+     "name": "x0",
+     "dtype": "f32",
+     "shape": [
+      100,
+      100
+     ],
+     "seed": 0
+    },
+    {
+     "name": "matmul",
+     "dtype": "f32",
+     "shape": [
+      100,
+      100
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

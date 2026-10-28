@@ -1,0 +1,53 @@
+{
+ "id": "p52_square_fn",
+ "code": "torch.square(torch.randn(1024))",
+ "rtol": 0,
+ "atol": 0,
+ "graph_inputs": [
+  "x"
+ ],
+ "graph_outputs": [
+  "square"
+ ],
+ "kernels": [
+  {
+   "node": "square",
+   "entry": "k_square_pointwise",
+   "arg_order": [
+    "x",
+    "square"
+   ],
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      1024
+     ],
+     "seed": 0
+    },
+    {
+     "name": "square",
+     "dtype": "f32",
+     "shape": [
+      1024
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

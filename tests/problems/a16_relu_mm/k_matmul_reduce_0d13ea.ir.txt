@@ -1,0 +1,58 @@
+    Tile[a0, a1, a2_co] (N=262144)
+        for a2 in a2_co..64:256
+            for a3 in 0..64
+                in1 = load q[a0, a3]
+                in0 = load kt[a3, a2]
+                f32 v0 = multiply(in0, in1)
+                f32 acc0 <- add(acc0, v0)
+            f32 v1 = relu(acc0)
+            in2 = load v[a2, a1]
+            f32 v2 = multiply(in2, v1)
+            f32 acc1 <- add(acc1, v2)
+            for a3 in 0..64
+                in1__r1 = load q[a0, a3]
+                in0__r1 = load kt[a3, ((a2 + 64) % 64)]
+                f32 v0__r1 = multiply(in0__r1, in1__r1)
+                f32 acc0__r1 <- add(acc0__r1, v0__r1)
+            f32 v1__r1 = relu(acc0__r1)
+            in2__r1 = load v[((a2 + 64) % 64), a1]
+            f32 v2__r1 = multiply(in2__r1, v1__r1)
+            Init(f32 v2__r1__id = 0.0)
+            v2__r1__m = v2__r1 when (((a2 + 64) < 64))
+                        v2__r1__id when (1)
+            f32 acc1__r1 <- add(acc1__r1, v2__r1__m)
+            for a3 in 0..64
+                in1__r2 = load q[a0, a3]
+                in0__r2 = load kt[a3, ((a2 + 128) % 64)]
+                f32 v0__r2 = multiply(in0__r2, in1__r2)
+                f32 acc0__r2 <- add(acc0__r2, v0__r2)
+            f32 v1__r2 = relu(acc0__r2)
+            in2__r2 = load v[((a2 + 128) % 64), a1]
+            f32 v2__r2 = multiply(in2__r2, v1__r2)
+            Init(f32 v2__r2__id = 0.0)
+            v2__r2__m = v2__r2 when (((a2 + 128) < 64))
+                        v2__r2__id when (1)
+            f32 acc1__r2 <- add(acc1__r2, v2__r2__m)
+            for a3 in 0..64
+                in1__r3 = load q[a0, a3]
+                in0__r3 = load kt[a3, ((a2 + 192) % 64)]
+                f32 v0__r3 = multiply(in0__r3, in1__r3)
+                f32 acc0__r3 <- add(acc0__r3, v0__r3)
+            f32 v1__r3 = relu(acc0__r3)
+            in2__r3 = load v[((a2 + 192) % 64), a1]
+            f32 v2__r3 = multiply(in2__r3, v1__r3)
+            Init(f32 v2__r3__id = 0.0)
+            v2__r3__m = v2__r3 when (((a2 + 192) < 64))
+                        v2__r3__id when (1)
+            f32 acc1__r3 <- add(acc1__r3, v2__r3__m)
+        f32 acc1 <- add(acc1, acc1__r1)
+        f32 acc1 <- add(acc1, acc1__r2)
+        f32 acc1 <- add(acc1, acc1__r3)
+        WarpShuffle(acc1, length=32)
+        Smem float acc1_smem[2]
+        if ((lane == 0)):
+            acc1_smem[warp] = acc1
+        Sync
+        TreeHalve(acc1, length=2, tid=warp)
+        if ((a2_co == 0)):
+            matmul_1[a0, a1] = acc1

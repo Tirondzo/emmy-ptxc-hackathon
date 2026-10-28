@@ -1,0 +1,65 @@
+{
+ "id": "f21_cosine",
+ "code": "x = torch.randn(64, 256); y = torch.randn(64, 256); (x * y).sum(-1) / (torch.sqrt((x * x).sum(-1)) * torch.sqrt((y * y).sum(-1)))",
+ "rtol": 0.001,
+ "atol": 0.0001,
+ "graph_inputs": [
+  "x",
+  "y"
+ ],
+ "graph_outputs": [
+  "div"
+ ],
+ "kernels": [
+  {
+   "node": "div",
+   "entry": "k_div_reduce",
+   "arg_order": [
+    "y",
+    "x",
+    "div"
+   ],
+   "grid": [
+    64,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "y",
+     "dtype": "f32",
+     "shape": [
+      64,
+      256
+     ],
+     "seed": 1
+    },
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      64,
+      256
+     ],
+     "seed": 0
+    },
+    {
+     "name": "div",
+     "dtype": "f32",
+     "shape": [
+      64
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

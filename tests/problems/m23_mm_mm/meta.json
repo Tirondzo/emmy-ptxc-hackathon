@@ -1,0 +1,77 @@
+{
+ "id": "m23_mm_mm",
+ "code": "(torch.randn(64, 64) @ torch.randn(64, 64)) @ torch.randn(64, 64)",
+ "rtol": 0.001,
+ "atol": 0.01,
+ "graph_inputs": [
+  "x0",
+  "x1",
+  "x2"
+ ],
+ "graph_outputs": [
+  "matmul_1"
+ ],
+ "kernels": [
+  {
+   "node": "matmul_1",
+   "entry": "k_matmul_reduce_998ca1",
+   "arg_order": [
+    "x2",
+    "x1",
+    "x0",
+    "matmul_1"
+   ],
+   "grid": [
+    4096,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "x2",
+     "dtype": "f32",
+     "shape": [
+      64,
+      64
+     ],
+     "seed": 2
+    },
+    {
+     "name": "x1",
+     "dtype": "f32",
+     "shape": [
+      64,
+      64
+     ],
+     "seed": 1
+    },
+    {
+     "name": "x0",
+     "dtype": "f32",
+     "shape": [
+      64,
+      64
+     ],
+     "seed": 0
+    },
+    {
+     "name": "matmul_1",
+     "dtype": "f32",
+     "shape": [
+      64,
+      64
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

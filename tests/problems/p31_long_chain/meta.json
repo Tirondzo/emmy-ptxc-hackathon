@@ -1,0 +1,75 @@
+{
+ "id": "p31_long_chain",
+ "code": "x = torch.randn(2048); torch.exp(-torch.abs(x)) * (x + 2.0) / (x * x + 1.0)",
+ "rtol": 1e-05,
+ "atol": 1e-06,
+ "graph_inputs": [
+  "x"
+ ],
+ "graph_outputs": [
+  "div"
+ ],
+ "kernels": [
+  {
+   "node": "div",
+   "entry": "k_div_pointwise",
+   "arg_order": [
+    "add_c1",
+    "add_1_c1",
+    "x",
+    "div"
+   ],
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "add_c1",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      2.0
+     ]
+    },
+    {
+     "name": "add_1_c1",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      1.0
+     ]
+    },
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      2048
+     ],
+     "seed": 0
+    },
+    {
+     "name": "div",
+     "dtype": "f32",
+     "shape": [
+      2048
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

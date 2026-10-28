@@ -1,0 +1,50 @@
+    Tile[_a2_ks, a0_b, a1_b, a0_u, a1_u] (N=196608)
+        Init(f32 acc0__c0_0 = 0.0)
+        Init(f32 acc0__c1_0 = 0.0)
+        Init(f32 acc0__c2_0 = 0.0)
+        Init(f32 acc0__c3_0 = 0.0)
+        Init(f32 acc0__c4_0 = 0.0)
+        Init(f32 acc0__c5_0 = 0.0)
+        Smem float _a_smem[48, 16] align=16
+        Smem float _b_smem[16, 64] align=16
+        for _ks in 0..16:16
+            for _fa in ((a0_u * 64) + a1_u)..192:512
+                cp.async[16B] _a_smem[((_fa * 4) / 16), ((_fa * 4) % 16)] <- x0[((((a0_b * 48) + ((_fa * 4) / 16)) < 256) ? ((a0_b * 48) + ((_fa * 4) / 16)) : (256 - 1)), ((_a2_ks * 16) + (_ks + ((_fa * 4) % 16)))]
+            for _fb in ((a0_u * 64) + a1_u)..256:512
+                cp.async[16B] _b_smem[((_fb * 4) / 64), ((_fb * 4) % 64)] <- x1[((_a2_ks * 16) + (_ks + ((_fb * 4) / 64))), ((a1_b * 64) + ((_fb * 4) % 64))]
+            cp.async.commit_group
+            cp.async.wait_group(0)
+            Sync
+            for _ki in 0..16
+                in1__c0_0 = load _b_smem[_ki, ((((a1_b * 64) + (a1_u * 1)) + 0) - (a1_b * 64))]
+                in0__c0_0 = load _a_smem[((((a0_b * 48) + (a0_u * 6)) + 0) - (a0_b * 48)), _ki]
+                f32 acc0__v__c0_0 = multiply(in1__c0_0, in0__c0_0)
+                f32 acc0__c0_0 <- add(acc0__c0_0, acc0__v__c0_0)
+                in0__c1_0 = load _a_smem[((((a0_b * 48) + (a0_u * 6)) + 1) - (a0_b * 48)), _ki]
+                f32 acc0__v__c1_0 = multiply(in1__c0_0, in0__c1_0)
+                f32 acc0__c1_0 <- add(acc0__c1_0, acc0__v__c1_0)
+                in0__c2_0 = load _a_smem[((((a0_b * 48) + (a0_u * 6)) + 2) - (a0_b * 48)), _ki]
+                f32 acc0__v__c2_0 = multiply(in1__c0_0, in0__c2_0)
+                f32 acc0__c2_0 <- add(acc0__c2_0, acc0__v__c2_0)
+                in0__c3_0 = load _a_smem[((((a0_b * 48) + (a0_u * 6)) + 3) - (a0_b * 48)), _ki]
+                f32 acc0__v__c3_0 = multiply(in1__c0_0, in0__c3_0)
+                f32 acc0__c3_0 <- add(acc0__c3_0, acc0__v__c3_0)
+                in0__c4_0 = load _a_smem[((((a0_b * 48) + (a0_u * 6)) + 4) - (a0_b * 48)), _ki]
+                f32 acc0__v__c4_0 = multiply(in1__c0_0, in0__c4_0)
+                f32 acc0__c4_0 <- add(acc0__c4_0, acc0__v__c4_0)
+                in0__c5_0 = load _a_smem[((((a0_b * 48) + (a0_u * 6)) + 5) - (a0_b * 48)), _ki]
+                f32 acc0__v__c5_0 = multiply(in1__c0_0, in0__c5_0)
+                f32 acc0__c5_0 <- add(acc0__c5_0, acc0__v__c5_0)
+            Sync
+        if (((((a0_b * 48) + (a0_u * 6)) + 0) < 256)):
+            matmul[((((a0_b * 48) + (a0_u * 6)) + 0) % 256), (((a1_b * 64) + (a1_u * 1)) + 0)] += acc0__c0_0  (atomic)
+        if (((((a0_b * 48) + (a0_u * 6)) + 1) < 256)):
+            matmul[((((a0_b * 48) + (a0_u * 6)) + 1) % 256), (((a1_b * 64) + (a1_u * 1)) + 0)] += acc0__c1_0  (atomic)
+        if (((((a0_b * 48) + (a0_u * 6)) + 2) < 256)):
+            matmul[((((a0_b * 48) + (a0_u * 6)) + 2) % 256), (((a1_b * 64) + (a1_u * 1)) + 0)] += acc0__c2_0  (atomic)
+        if (((((a0_b * 48) + (a0_u * 6)) + 3) < 256)):
+            matmul[((((a0_b * 48) + (a0_u * 6)) + 3) % 256), (((a1_b * 64) + (a1_u * 1)) + 0)] += acc0__c3_0  (atomic)
+        if (((((a0_b * 48) + (a0_u * 6)) + 4) < 256)):
+            matmul[((((a0_b * 48) + (a0_u * 6)) + 4) % 256), (((a1_b * 64) + (a1_u * 1)) + 0)] += acc0__c4_0  (atomic)
+        if (((((a0_b * 48) + (a0_u * 6)) + 5) < 256)):
+            matmul[((((a0_b * 48) + (a0_u * 6)) + 5) % 256), (((a1_b * 64) + (a1_u * 1)) + 0)] += acc0__c5_0  (atomic)

@@ -1,0 +1,63 @@
+{
+ "id": "r31_sum_two_inputs",
+ "code": "x = torch.randn(4096); y = torch.randn(4096); (x * y).sum()",
+ "rtol": 0.0001,
+ "atol": 0.0001,
+ "graph_inputs": [
+  "x",
+  "y"
+ ],
+ "graph_outputs": [
+  "sum_1"
+ ],
+ "kernels": [
+  {
+   "node": "sum_1",
+   "entry": "k_sum_1_reduce",
+   "arg_order": [
+    "y",
+    "x",
+    "sum_1"
+   ],
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "y",
+     "dtype": "f32",
+     "shape": [
+      4096
+     ],
+     "seed": 1
+    },
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      4096
+     ],
+     "seed": 0
+    },
+    {
+     "name": "sum_1",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

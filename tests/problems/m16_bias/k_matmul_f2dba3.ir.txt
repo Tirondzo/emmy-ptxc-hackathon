@@ -1,0 +1,45 @@
+    Tile[a0_b, a1_b, a0_u, a1_u] (N=1024)
+        for a2 in 0..256
+            in0__ar0 = load a[(((a0_b * 2) + (a0_u * 2)) + 0), a2]
+            in1__bc0, in1__bc1, in1__bc2, in1__bc3 = load b[a2, (((a1_b * 4) + (a1_u * 4)) + 0)]
+            f32 v0__c0_0 = multiply(in0__ar0, in1__bc0)
+            f32 acc0__c0_0 <- add(acc0__c0_0, v0__c0_0)
+            f32 v0__c0_1 = multiply(in0__ar0, in1__bc1)
+            f32 acc0__c0_1 <- add(acc0__c0_1, v0__c0_1)
+            f32 v0__c0_2 = multiply(in0__ar0, in1__bc2)
+            f32 acc0__c0_2 <- add(acc0__c0_2, v0__c0_2)
+            f32 v0__c0_3 = multiply(in0__ar0, in1__bc3)
+            f32 acc0__c0_3 <- add(acc0__c0_3, v0__c0_3)
+            in0__ar1 = load a[(((a0_b * 2) + (a0_u * 2)) + 1), a2]
+            f32 v0__c1_0 = multiply(in0__ar1, in1__bc0)
+            f32 acc0__c1_0 <- add(acc0__c1_0, v0__c1_0)
+            f32 v0__c1_1 = multiply(in0__ar1, in1__bc1)
+            f32 acc0__c1_1 <- add(acc0__c1_1, v0__c1_1)
+            f32 v0__c1_2 = multiply(in0__ar1, in1__bc2)
+            f32 acc0__c1_2 <- add(acc0__c1_2, v0__c1_2)
+            f32 v0__c1_3 = multiply(in0__ar1, in1__bc3)
+            f32 acc0__c1_3 <- add(acc0__c1_3, v0__c1_3)
+        in2__c0_0 = load c[(((a1_b * 4) + (a1_u * 4)) + 0)]
+        f32 v1__c0_0 = add(acc0__c0_0, in2__c0_0)
+        add[(((a0_b * 2) + (a0_u * 2)) + 0), (((a1_b * 4) + (a1_u * 4)) + 0)] = v1__c0_0
+        in2__c0_1 = load c[(((a1_b * 4) + (a1_u * 4)) + 1)]
+        f32 v1__c0_1 = add(acc0__c0_1, in2__c0_1)
+        add[(((a0_b * 2) + (a0_u * 2)) + 0), (((a1_b * 4) + (a1_u * 4)) + 1)] = v1__c0_1
+        in2__c0_2 = load c[(((a1_b * 4) + (a1_u * 4)) + 2)]
+        f32 v1__c0_2 = add(acc0__c0_2, in2__c0_2)
+        add[(((a0_b * 2) + (a0_u * 2)) + 0), (((a1_b * 4) + (a1_u * 4)) + 2)] = v1__c0_2
+        in2__c0_3 = load c[(((a1_b * 4) + (a1_u * 4)) + 3)]
+        f32 v1__c0_3 = add(acc0__c0_3, in2__c0_3)
+        add[(((a0_b * 2) + (a0_u * 2)) + 0), (((a1_b * 4) + (a1_u * 4)) + 3)] = v1__c0_3
+        in2__c1_0 = load c[(((a1_b * 4) + (a1_u * 4)) + 0)]
+        f32 v1__c1_0 = add(acc0__c1_0, in2__c1_0)
+        add[(((a0_b * 2) + (a0_u * 2)) + 1), (((a1_b * 4) + (a1_u * 4)) + 0)] = v1__c1_0
+        in2__c1_1 = load c[(((a1_b * 4) + (a1_u * 4)) + 1)]
+        f32 v1__c1_1 = add(acc0__c1_1, in2__c1_1)
+        add[(((a0_b * 2) + (a0_u * 2)) + 1), (((a1_b * 4) + (a1_u * 4)) + 1)] = v1__c1_1
+        in2__c1_2 = load c[(((a1_b * 4) + (a1_u * 4)) + 2)]
+        f32 v1__c1_2 = add(acc0__c1_2, in2__c1_2)
+        add[(((a0_b * 2) + (a0_u * 2)) + 1), (((a1_b * 4) + (a1_u * 4)) + 2)] = v1__c1_2
+        in2__c1_3 = load c[(((a1_b * 4) + (a1_u * 4)) + 3)]
+        f32 v1__c1_3 = add(acc0__c1_3, in2__c1_3)
+        add[(((a0_b * 2) + (a0_u * 2)) + 1), (((a1_b * 4) + (a1_u * 4)) + 3)] = v1__c1_3

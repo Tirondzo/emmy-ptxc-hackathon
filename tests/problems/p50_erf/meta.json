@@ -1,0 +1,53 @@
+{
+ "id": "p50_erf",
+ "code": "torch.erf(torch.randn(1024))",
+ "rtol": 1e-05,
+ "atol": 1e-06,
+ "graph_inputs": [
+  "x"
+ ],
+ "graph_outputs": [
+  "erf"
+ ],
+ "kernels": [
+  {
+   "node": "erf",
+   "entry": "k_erf_pointwise",
+   "arg_order": [
+    "x",
+    "erf"
+   ],
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      1024
+     ],
+     "seed": 0
+    },
+    {
+     "name": "erf",
+     "dtype": "f32",
+     "shape": [
+      1024
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}
