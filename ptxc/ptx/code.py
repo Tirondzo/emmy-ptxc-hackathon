@@ -78,11 +78,11 @@ class Param:
     ty: Ty
 
 
-@dataclass(frozen=True)
+@dataclass
 class Shared:
     name: str
     nbytes: int
-    align: int
+    align: int  # the dynamic pool's grows: declared once, carved by every Smem
     extern: bool = False  # the dynamic pool, sized at launch: `.extern .shared .b8 name[]`
 
 
@@ -92,6 +92,7 @@ class PtxModule:
     params: tuple[Param, ...]
     target: str = "sm_89"
     version: str = "8.0"  # sm_89 needs PTX ISA 7.8 or later
+    max_threads: int | None = None  # `.maxntid`: the launch's block, so ptxas bounds registers to it
     shared: list[Shared] = field(default_factory=list)
     body: list[Item] = field(default_factory=list)
     registers: dict[str, int] = field(default_factory=dict)  # bank -> count, set when the builder exits

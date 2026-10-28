@@ -11,7 +11,7 @@ from ..ir import Body, Node
 from ..ptx import Reg, Sym, Value, cvt, for_, if_, mov, op, reg, setp
 from ..types import INDEX, U32
 from . import expr
-from .lowerer import assign, bind, declare, lower, lowering, rule, scope
+from .lowerer import assign, bind, declare, lower, lowering, rule, scope, tid
 from .symbols import Bound
 
 
@@ -31,7 +31,7 @@ def tile(s: Node) -> None:
     if launch.threads < cells:
         raise InvalidKernel(f"{cells} cells for {launch.threads} launched threads")
     gid = global_id()
-    guard = if_(setp("lt", gid, INDEX(cells))) if launch.threads > cells else nullcontext()
+    guard = if_(setp("lt", gid, U32(cells))) if launch.threads > cells else nullcontext()
     with scope(), guard:
         decode_axes(gid, s.axes)
         lower(s.body)
@@ -40,18 +40,19 @@ def tile(s: Node) -> None:
 def global_id() -> Reg:
     ctaid = op("mov", U32, Sym("%ctaid.x"))
     ntid = op("mov", U32, Sym("%ntid.x"))
-    return cvt(op("mad.lo", U32, ctaid, ntid, lowering().tid), INDEX)
+    return op("mad.lo", U32, ctaid, ntid, tid())
 
 
 def decode_axes(gid: Reg, axes: Body) -> None:
-    """axis_i = (gid / stride_i) % extent_i, row-major; the leading axis is bounded by the guard."""
+    """axis_i = (gid / stride_i) % extent_i, row-major, unsigned (gid is never negative, and a signed
+    division by a constant pays a sign fix-up); the leading axis is bounded by the guard."""
     extents = [ir.extent(a) for a in axes]
     for i, axis in enumerate(axes):
         stride = math.prod(extents[i + 1 :])
-        v: Value = gid if stride == 1 else op("div", INDEX, gid, INDEX(stride))
+        v: Value = gid if stride == 1 else op("div", U32, gid, U32(stride))
         if i:
-            v = op("rem", INDEX, v, INDEX(extents[i]))
-        assign(axis.name, v)
+            v = op("rem", U32, v, U32(extents[i]))
+        assign(axis.name, cvt(v, INDEX))
 
 
 @rule("Loop")

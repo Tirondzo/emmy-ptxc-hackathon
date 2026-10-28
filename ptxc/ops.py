@@ -16,7 +16,7 @@ import math
 from collections.abc import Callable, Sequence
 
 from .errors import Unsupported
-from .ptx import Reg, Value, bitcast, cvt, emit, op, reg, setp, truth, unify
+from .ptx import Reg, Value, bitcast, cvt, emit, op, reg, select, setp, truth, unify
 from .types import B32, F32, PRED, S32, U32, Kind, Ty
 
 type Recipe = Callable[..., Value]  # (ty: Ty, *args: Value) -> Value
@@ -105,6 +105,14 @@ def divide(ty: Ty, x: Value, y: Value) -> Value:
     return op("div.rn" if ty.is_float else "div", ty, x, y)
 
 
+@recipe("floor_divide")
+def floor_divide(ty: Ty, x: Value, y: Value) -> Value:
+    """Integers only, as emmy renders it: C's truncating `/` (the operands it meets are non-negative)."""
+    if ty.is_float:
+        raise Unsupported("float floor_divide")
+    return divide(ty, x, y)
+
+
 @recipe("remainder", "mod")
 def remainder(ty: Ty, x: Value, y: Value) -> Value:
     if ty.is_float:
@@ -124,7 +132,9 @@ def minimum(ty: Ty, x: Value, y: Value) -> Value:
 
 @recipe("negative")
 def negative(ty: Ty, x: Value) -> Value:
-    return op("neg", ty, x)
+    """`neg` has no unsigned form; in two's complement the signed one is bit-identical."""
+    signed = Ty(Kind.SIGNED, ty.bits) if ty.kind is Kind.UNSIGNED else ty
+    return cvt(op("neg", signed, x), ty)
 
 
 @recipe("abs", "absolute")
@@ -165,7 +175,7 @@ recipe("not_equal", raw=True)(compare("ne", unordered="neu"))  # C's !=: true wh
 
 @recipe("where", raw=True)
 def where(ty: Ty, cond: Value, a: Value, b: Value) -> Value:
-    return op("selp", ty, cvt(a, ty), cvt(b, ty), truth(cond))
+    return select(ty, cvt(a, ty), cvt(b, ty), truth(cond))
 
 
 @recipe("bitwise_not", raw=True)

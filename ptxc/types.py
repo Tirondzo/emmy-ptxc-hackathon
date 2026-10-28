@@ -95,8 +95,11 @@ NAMES = {  # emmy's dtype names and the C spellings Smem uses; 16-bit types abse
     "int": S32,
     "i64": S64,
     "s64": S64,
+    "long long": S64,
     "u32": U32,
+    "unsigned int": U32,
     "u64": U64,
+    "unsigned long long": U64,
     "bool": PRED,  # a predicate register; `storable` makes it a byte in memory
 }
 

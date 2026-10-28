@@ -14,15 +14,15 @@ from collections.abc import Sequence
 from .. import ir, ops
 from ..errors import InvalidKernel, Unsupported
 from ..ir import Node
-from ..ptx import Addr, Imm, Reg, Sym, Value, cvt, emit, op, reg, setp, truth, unify
+from ..ptx import Addr, Imm, Reg, Sym, Value, cvt, emit, op, reg, select, truth, unify
 from ..types import F32, INDEX, PRED, S64, U32, U64, ty_of
 from .lowerer import read
 from .symbols import Array
 
 ARITH = {"+": "add", "-": "subtract", "*": "multiply", "/": "divide", "//": "divide", "%": "remainder"}
-COMPARE = {"==": "eq", "!=": "ne", "<": "lt", "<=": "le", ">": "gt", ">=": "ge"}
+COMPARE = {"==": "equal", "!=": "not_equal", "<": "less", "<=": "less_equal", ">": "greater", ">=": "greater_equal"}
 LOGIC = {"&&": "and", "||": "or", "and": "and", "or": "or"}
-SPECIAL = {"threadIdx": "tid", "blockIdx": "ctaid", "blockDim": "ntid", "gridDim": "nctaid"}
+SPECIAL = {"thread_idx": "tid", "block_idx": "ctaid", "block_dim": "ntid", "grid_dim": "nctaid"}  # as emmy spells them
 
 
 def value(e: Node | int | float) -> Value:
@@ -44,10 +44,19 @@ def value(e: Node | int | float) -> Value:
             ty = next((a.ty for a in args if a.ty.is_float), args[0].ty)
             return ops.apply(e.name, ty, args)
         case "Builtin":
-            space, axis = e.name.split(".")
-            return cvt(op("mov", U32, Sym(f"%{SPECIAL[space]}.{axis}")), INDEX)
+            return builtin(e.name)
         case k:
             raise Unsupported(f"expression {k}")
+
+
+def builtin(name: str) -> Value:
+    """`thread_idx.x` and friends -> the special register; `warp_size` is a constant."""
+    if name == "warp_size":
+        return INDEX(32)
+    space, _, axis = name.partition(".")
+    if space not in SPECIAL or axis not in ("x", "y", "z"):
+        raise Unsupported(f"builtin {name!r}")
+    return cvt(op("mov", U32, Sym(f"%{SPECIAL[space]}.{axis}")), INDEX)
 
 
 def predicate(e: Node) -> Reg:
@@ -58,8 +67,7 @@ def binary(e: Node) -> Value:
     if e.op in ARITH:
         return arith(e.op, value(e.left), value(e.right))
     if e.op in COMPARE:
-        a, b = unify(value(e.left), value(e.right))
-        return setp(COMPARE[e.op], a, b)
+        return ops.apply(COMPARE[e.op], PRED, [value(e.left), value(e.right)])  # the one table of comparisons
     if e.op in LOGIC:
         return op(LOGIC[e.op], PRED, predicate(e.left), predicate(e.right))
     raise Unsupported(f"operator {e.op!r}")
@@ -84,15 +92,23 @@ def fold(operator: str, x: int | float, y: int | float) -> int | float:
         case "*":
             return x * y
         case "/" | "//":  # C division, which is what `//` renders to in emmy too: toward zero, like div.s32
-            return x / y if isinstance(x, float) else math.trunc(x / y)
+            return x / y if isinstance(x, float) else trunc_div(x, y)
         case _:
-            return x - y * math.trunc(x / y)  # C remainder
+            return x - y * trunc_div(x, y)  # C remainder
+
+
+def trunc_div(x: int | float, y: int | float) -> int:
+    """Toward zero; in integers, since `x / y` rounds past 2^53."""
+    if isinstance(x, float):
+        return math.trunc(x / y)
+    q = abs(x) // abs(y)
+    return q if (x < 0) == (y < 0) else -q
 
 
 def ternary(e: Node) -> Value:
     p = predicate(e.cond)
     a, b = unify(value(e.if_true), value(e.if_false))
-    return op("selp", a.ty, a, b, p)
+    return select(a.ty, a, b, p)
 
 
 def linear(e: Node) -> tuple[Value | None, int]:

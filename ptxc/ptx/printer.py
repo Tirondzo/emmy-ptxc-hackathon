@@ -32,7 +32,8 @@ def shared_decls(m: PtxModule) -> list[str]:
 
 def signature(m: PtxModule) -> list[str]:
     params = ",\n".join(f"\t.param .{p.ty.ptx} {p.name}" for p in m.params)
-    return [f".visible .entry {m.entry}(", params, ")"]
+    bound = [f".maxntid {m.max_threads}, 1, 1"] if m.max_threads else []
+    return [f".visible .entry {m.entry}(", params, ")", *bound]
 
 
 def register_decls(m: PtxModule) -> list[str]:

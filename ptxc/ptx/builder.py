@@ -144,6 +144,13 @@ def setp(cmp: str, a: Value, b: Value) -> Value:
     return p
 
 
+def select(ty: Ty, a: Value, b: Value, p: Reg) -> Value:
+    """`p ? a : b`. `selp` has no predicate form: predicates ride as 1 / 0 and come back through `setp`."""
+    if ty.kind is Kind.PRED:
+        return cvt(op("selp", U32, cvt(a, U32), cvt(b, U32), p), PRED)
+    return op("selp", ty, a, b, p)
+
+
 def truth(v: Value) -> Reg:
     """`v` as a predicate register: a branch guard, a `selp` selector."""
     return materialize(cvt(v, PRED))

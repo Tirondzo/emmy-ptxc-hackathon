@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .errors import InvalidKernel, Unsupported
+from .errors import CompileError, InvalidKernel, Unsupported
 from .types import Ty, storable, ty_of
 
 if TYPE_CHECKING:  # annotations only: ptxc still imports without emmy installed
@@ -52,7 +52,8 @@ def plus(a: Expr, b: Expr) -> Expr:
 
 
 def op_name(op: ElementwiseImpl) -> str:
-    return op.name
+    """Through emmy's own alias map: sum -> add, prod -> multiply, amax / fmax -> maximum, fmin -> minimum."""
+    return op.reduce_canon
 
 
 def op_identity(op: ElementwiseImpl) -> float:
@@ -116,8 +117,8 @@ class Kernel:
         from emmy.compiler.graph import Graph  # the one runtime import of emmy
 
         try:
-            graph = Graph.from_dict(json.loads(ir_path.read_text()))
-            meta = json.loads(ir_path.with_name("meta.json").read_text())
+            graph = Graph.from_dict(json.loads(ir_path.read_text(encoding="utf-8")))
+            meta = json.loads(ir_path.with_name("meta.json").read_text(encoding="utf-8"))
             kernels = [node.op for node in graph.nodes.values() if kind(node.op) == "KernelOp"]
             if len(kernels) != 1:
                 raise Unsupported(f"{len(kernels)} KernelOps in one file")
@@ -135,6 +136,8 @@ class Kernel:
             if any(d != 1 for d in rest + rest_b):
                 raise Unsupported("multi-dimensional launch")
             launch = Launch(grid, block, spec.get("smem_bytes", 0))
-        except (OSError, ValueError, KeyError, TypeError) as err:
+        except CompileError:
+            raise
+        except Exception as err:  # emmy's parser is not ours: whatever it raises is a malformed input
             raise InvalidKernel(f"{ir_path.name}: {type(err).__name__}: {err}") from err
         return cls(identifier(op.name), op.body, params, launch)

@@ -19,6 +19,7 @@ from ..ptx import (
     barrier,
     bitcast,
     builder,
+    cvt,
     emit,
     if_,
     materialize,
@@ -43,7 +44,9 @@ def smem(s: Node) -> None:
     shared = builder().module.shared
     cur = lowering()
     if pool := cur.kernel.launch.smem_bytes:
-        shared[:1] = [Shared(POOL, 0, max(align, shared[0].align if shared else 16), extern=True)]
+        if not shared:
+            shared.append(Shared(POOL, 0, 16, extern=True))  # declared once; its alignment grows with what it holds
+        shared[0].align = max(shared[0].align, align)
         offset = -(-cur.smem_used // align) * align
         cur.smem_used = offset + nbytes
         if cur.smem_used > pool:
@@ -62,15 +65,26 @@ def sync(s: Node) -> None:
 
 @rule("WarpShuffle")
 def warp_shuffle(s: Node) -> None:
-    """Butterfly: for each delta, every state meets its lane ^ delta partner and `combine` folds it in.
-    The member mask is `activemask`: a sub-warp block or a guarded tile leaves lanes that never arrive."""
+    """A power-of-two `length`: the butterfly, every lane meets lane ^ delta and ends with the result.
+    Any other length (emmy never makes one): a butterfly cannot reach every lane, so the states fold
+    down onto lane 0, each step guarded by `lane + delta < length`, and lane 0 is broadcast. The
+    member mask is `activemask`: a sub-warp block or a guarded tile leaves lanes that never arrive."""
     if s.length > 32:
         raise InvalidKernel(f"WarpShuffle over {s.length} lanes: a warp has 32")
     for name in s.state:
         mutable(name)
     mask = activemask()
+    if s.length & (s.length - 1) == 0:
+        for delta in halving(s.length):
+            combine(s, [shuffle("bfly", read(name), delta, s.length, mask) for name in s.state])
+        return
+    lane = read("lane")
     for delta in halving(s.length):
-        combine(s, [shuffle(read(name), delta, s.length, mask) for name in s.state])
+        others = [shuffle("down", read(name), delta, 32, mask) for name in s.state]
+        with if_(setp("lt", op("add", INDEX, lane, INDEX(delta)), INDEX(s.length))):
+            combine(s, others)
+    for name in s.state:
+        assign(name, shuffle("idx", read(name), 0, 32, mask))
 
 
 @rule("TreeHalve")
@@ -115,19 +129,22 @@ def active(tid: Value, stride: int, length: int) -> Reg:
     return op("and", PRED, p, setp("lt", partner, INDEX(length)))
 
 
-def shuffle(x: Value, delta: int, length: int, mask: Reg) -> Value:
-    """`shfl.sync.bfly.b32` of one value; a 64-bit value goes as two halves."""
+def shuffle(mode: str, x: Value, lane: int, length: int, mask: Reg) -> Value:
+    """`shfl.sync.{mode}.b32` of one value, `lane` its delta or source; the clamp keeps it inside aligned
+    `length`-lane groups. A 64-bit value goes as two halves, a predicate as 1 / 0."""
+    if x.ty == PRED:
+        return cvt(shuffle(mode, cvt(x, U32), lane, length, mask), PRED)
     clamp = B32(((32 - length) << 8) | 0x1F)
 
-    def bfly(bits: Value) -> Reg:
-        return op("shfl.sync.bfly", B32, bits, INDEX(delta), clamp, mask)
+    def shfl(bits: Value) -> Reg:
+        return op(f"shfl.sync.{mode}", B32, bits, INDEX(lane), clamp, mask)
 
     if x.ty.bits == 32:
-        return bitcast(bfly(bitcast(x, B32)), x.ty)
+        return bitcast(shfl(bitcast(x, B32)), x.ty)
     lo, hi = reg(B32), reg(B32)
     emit("mov.b64", Vec((lo, hi)), materialize(x))
     out = reg(x.ty)
-    emit("mov.b64", out, Vec((bfly(lo), bfly(hi))))
+    emit("mov.b64", out, Vec((shfl(lo), shfl(hi))))
     return out
 
 

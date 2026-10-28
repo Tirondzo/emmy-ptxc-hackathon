@@ -54,28 +54,30 @@ leave open are pinned once in `ops.py`.
 - **Every input fault is one line.** Whatever the IR or meta.json gets wrong is a `CompileError`
   (`InvalidKernel`: breaks the IR's rules or disagrees with meta.json; `Unsupported`: valid IR
   ptxc does not lower yet), printed as one line on stderr with exit 1 and nothing on stdout.
-  `ir.Kernel.load` turns missing or malformed files and absent keys into `InvalidKernel`; a
-  Python traceback is a compiler bug, never an input.
+  `ir.Kernel.load` turns whatever the two files get wrong, including anything emmy's parser
+  raises, into `InvalidKernel`; a Python traceback is a compiler bug, never an input.
 
 ## Decided by the IR's semantics
 
 | Topic | Rule | Where |
 |---|---|---|
-| Tile decode | row-major over every listed axis; guard `gid < cells` when the launch has spare threads | `control.tile` |
+| Tile decode | row-major over every listed axis, in unsigned arithmetic (gid is never negative); guard `gid < cells` when the launch has spare threads | `control.tile` |
+| Launch bound | `.maxntid` from meta.json's block: ptxas bounds registers to what the launch needs | `driver`, `printer` |
 | Rasterization | ignored for now. Doesn't affect correctness, only cache hits | `control.tile` |
 | Accumulator seed | a `seed=True` loop declares each Accum of its *own* body (not of nested blocks) at its identity, in the enclosing scope, before opening its own; an outer name of the same spelling is shadowed, not reset | `control.seed_accumulators` |
-| Accum | `name <- op(base or name, value)`: online softmax rescales the accumulator and passes it as `base` | `compute.accum` |
+| Accum | `name <- op(base or name, value)`, `op` through emmy's alias map (`amax` is `maximum`): online softmax rescales the accumulator and passes it as `base` | `compute.accum` |
 | Max identity | emmy's `-1e30`, not `-inf`: avoids `inf - inf = NaN` in online softmax | `ir.op_identity` |
 | Implicit names | `lane`, `warp` bound in the prologue | `lowerer.prologue` |
 | Shared memory | `smem_bytes > 0` -> one `.extern` pool carved by a running cursor; else static arrays | `block.smem` |
 | Combines | the states are made Variables first (`lowerer.mutable`); `combine_states` is instantiated per step in a fresh scope with `state_b` bound, and its Assigns mutate them | `block.combine` |
 | Warp sync masks | `activemask` for `shfl.sync` and `bar.warp.sync`: a sub-warp block (a22 launches 16 threads) or a guarded tile leaves lanes that never arrive, and naming them is undefined | `block.shuffle`, `builder.barrier` |
+| WarpShuffle | a power-of-two length is the butterfly (emmy's only case); any other length folds down onto lane 0 under a `lane + delta < length` guard and broadcasts it, since a butterfly cannot reach every lane | `block.warp_shuffle` |
 | TreeHalve | halving tree, barrier outside the branch, root broadcast to every thread | `block.tree_halve` |
 | Rounding | `.rn` on float add / sub / mul (also blocks fma contraction); explicit `fma.rn` inside recipes | `ops.py` |
 | Transcendentals | exp / log / rsqrt through `ex2` / `lg2` / `rsqrt.approx` (a few ulp); erf, sin, cos, tanh as polynomials at about 2 ulp, because `tanh.approx` is 2^-11 and `sin.approx` has no range reduction; pow as `ex2(y * lg2(abs x))` with C's sign and NaN rules | `ops.py` |
-| bool | a `.pred` register: comparisons produce it (`setp`), `where` selects on it (`selp`), arithmetic converts it to 1 / 0 and anything nonzero (NaN included) back to true, as C does; in a buffer it is one byte of 0 / 1, as C stores it | `builder.cvt`, `types.storable`, `ops.py` |
+| bool | a `.pred` register: comparisons produce it (`setp`), `where` selects on it (`selp`), arithmetic converts it to 1 / 0 and anything nonzero (NaN included) back to true, as C does; in a buffer it is one byte of 0 / 1, as C stores it; `selp` has no predicate form, so a select between predicates goes through 1 / 0 | `builder.cvt`, `builder.select`, `types.storable`, `ops.py` |
 | Coordinates | `//` in a flattened tile index (every pointwise tile of rank >= 2) lowers to `div.s32`: operands are non-negative | `expr.arith` |
-| Beyond the contract | `CastExpr`, `FuncCallExpr` and `Builtin` are starred in TASK.md (in no open or hidden problem) but lowered anyway, a line each: a cast is `cvt`, a call is the elementwise recipe at the first float argument's type (else the first argument's), a builtin is its special register | `expr.value` |
+| Beyond the contract | `CastExpr`, `FuncCallExpr` and `Builtin` are starred in TASK.md (in no open or hidden problem) but lowered anyway, a line each: a cast is `cvt`, a call is the elementwise recipe at the first float argument's type (else the first argument's), a builtin (`thread_idx.x`, as emmy spells it) is its special register | `expr.value` |
 | Indexing | one coordinate per axis, row-major; an empty index is element 0 (`sum_1[]`); any other count is `InvalidKernel` rather than a guessed flattening | `expr.address` |
 | Type mixes | `cvt` between raw bits and numbers, `setp` on predicates or ordered on bits: `Unsupported` before ptxas sees them | `builder.cvt`, `builder.setp` |
 
@@ -85,7 +87,7 @@ leave open are pinned once in `ops.py`.
 |---|---|
 | an elementwise op | one `@recipe("name")` in `ops.py`, composing others by calling them |
 | a node kind | one `@rule("Kind")` in the matching `lower/` module |
-| a dtype | a bank in `Ty.bank` and `PREFIX`, conversions in `builder.cvt` |
+| a dtype | its names (emmy's, and the C spelling `Smem` carries) in `types.NAMES`, a bank in `Ty.bank` and `PREFIX`, conversions in `builder.cvt` |
 | a kernel-wide value | bind it in `lowerer.prologue` |
 
 ## Deferred, on purpose

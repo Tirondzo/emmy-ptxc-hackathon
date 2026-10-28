@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from .. import ir, ops
 from ..errors import InvalidKernel, Unsupported
 from ..ir import Node
-from ..ptx import Addr, Reg, Vec, cvt, dotted, emit, materialize, reg
+from ..ptx import Addr, Reg, Value, Vec, cvt, dotted, emit, materialize, reg
+from ..types import PRED, Ty
 from . import expr
 from .lowerer import array, assign, declare, lowering, read, rule
 from .symbols import Array, Variable
@@ -13,10 +16,15 @@ from .symbols import Array, Variable
 
 @rule("Assign")
 def assign_(s: Node) -> None:
-    """`name = op(args)`. `dtype` is None in every combine_states body, so the fallback is load-bearing."""
+    """`name = op(args)`."""
     args = [read(name) for name in s.args]
-    ty = ir.ty(s.dtype) or args[0].ty
-    assign(s.name, ops.apply(ir.op_name(s.op), ty, args))
+    assign(s.name, ops.apply(ir.op_name(s.op), typed(s, args), args))
+
+
+def typed(s: Node, args: Sequence[Value]) -> Ty:
+    """`dtype`, or the type of the first argument that is not a predicate: a predicate selects or masks,
+    it never decides the result. `dtype` is None in every combine_states body, so the fallback is load-bearing."""
+    return ir.ty(s.dtype) or next((a.ty for a in args if a.ty != PRED), args[0].ty)
 
 
 @rule("Let")
@@ -37,8 +45,7 @@ def accum(s: Node) -> None:
     if not isinstance(lowering().syms.get(s.name), Variable):
         raise InvalidKernel(f"accumulator {s.name!r} is not seeded by its loop or an Init")
     args = [read(s.base or s.name), read(s.value)]
-    ty = ir.ty(s.dtype) or args[0].ty
-    assign(s.name, ops.apply(ir.op_name(s.op), ty, args))
+    assign(s.name, ops.apply(ir.op_name(s.op), typed(s, args), args))
 
 
 @rule("Load")
