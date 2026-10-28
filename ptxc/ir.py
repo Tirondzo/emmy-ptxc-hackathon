@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .config import IDENTITY
 from .errors import CompileError, InvalidKernel, Unsupported
 from .types import Ty, storable, ty_of
 
@@ -57,10 +58,10 @@ def op_name(op: ElementwiseImpl) -> str:
 
 
 def op_identity(op: ElementwiseImpl) -> float:
-    """emmy's neutral element: maximum is -1e30, not -inf, so inf - inf never appears."""
-    if not op.has_identity:
+    """The neutral element a seeded accumulator starts from: `config.IDENTITY` by canonical name."""
+    if (name := op_name(op)) not in IDENTITY:
         raise InvalidKernel(f"{op.name} has no identity to seed with")
-    return op.identity
+    return IDENTITY[name]
 
 
 # ---- the launch contract ------------------------------------------------------------
@@ -108,7 +109,6 @@ class Kernel:
     body: Body
     params: tuple[Buffer, ...]  # in meta.json `arg_order`: the signature contract
     launch: Launch
-    target: str = "sm_89"
 
     @classmethod
     def load(cls, ir_path: Path) -> Kernel:

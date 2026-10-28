@@ -29,7 +29,7 @@ from ..ptx import (
 )
 from ..types import B32, INDEX, PRED, U32, storable
 from . import expr
-from .lowerer import array, assign, bind, lower, lowering, mutable, read, rule, scope
+from .lowerer import array, assign, bind, lower, lowering, mutable, read, rule, scope, target
 from .symbols import Array, Bound
 
 POOL = "_smem_pool"  # the one `.extern .shared` array when meta.json launches dynamic shared memory
@@ -69,8 +69,9 @@ def warp_shuffle(s: Node) -> None:
     Any other length (emmy never makes one): a butterfly cannot reach every lane, so the states fold
     down onto lane 0, each step guarded by `lane + delta < length`, and lane 0 is broadcast. The
     member mask is `activemask`: a sub-warp block or a guarded tile leaves lanes that never arrive."""
-    if s.length > 32:
-        raise InvalidKernel(f"WarpShuffle over {s.length} lanes: a warp has 32")
+    warp = target().warp
+    if s.length > warp:
+        raise InvalidKernel(f"WarpShuffle over {s.length} lanes: a warp has {warp}")
     for name in s.state:
         mutable(name)
     mask = activemask()
@@ -80,11 +81,11 @@ def warp_shuffle(s: Node) -> None:
         return
     lane = read("lane")
     for delta in halving(s.length):
-        others = [shuffle("down", read(name), delta, 32, mask) for name in s.state]
+        others = [shuffle("down", read(name), delta, warp, mask) for name in s.state]
         with if_(setp("lt", op("add", INDEX, lane, INDEX(delta)), INDEX(s.length))):
             combine(s, others)
     for name in s.state:
-        assign(name, shuffle("idx", read(name), 0, 32, mask))
+        assign(name, shuffle("idx", read(name), 0, warp, mask))
 
 
 @rule("TreeHalve")
@@ -134,7 +135,7 @@ def shuffle(mode: str, x: Value, lane: int, length: int, mask: Reg) -> Value:
     `length`-lane groups. A 64-bit value goes as two halves, a predicate as 1 / 0."""
     if x.ty == PRED:
         return cvt(shuffle(mode, cvt(x, U32), lane, length, mask), PRED)
-    clamp = B32(((32 - length) << 8) | 0x1F)
+    clamp = B32(((target().warp - length) << 8) | target().lane_mask)
 
     def shfl(bits: Value) -> Reg:
         return op(f"shfl.sync.{mode}", B32, bits, INDEX(lane), clamp, mask)

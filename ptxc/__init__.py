@@ -1,4 +1,5 @@
+from .config import SM89, Target
 from .driver import compile_file
 from .errors import CompileError
 
-__all__ = ["CompileError", "compile_file"]
+__all__ = ["SM89", "CompileError", "Target", "compile_file"]

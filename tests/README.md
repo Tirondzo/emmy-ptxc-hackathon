@@ -10,7 +10,12 @@ tests/
   gpu_runner.py          the local runner (CLI and library): ptxas + CUDA driver API
   conftest.py            pytest options: --problems DIR, --compiler PATH, --repeat N
   test_problems.py       one test per problem folder, end to end
-  test_contract.py       the CLI contract: stdout is ASCII PTX, entry name, arg_order, determinism, speed
+  test_contract.py       the CLI contract: stdout is ASCII PTX, entry name, arg_order, determinism, speed,
+                         and malformed input as one error line
+  kernels.py             emmy IR written in Python and lowered in-process, for shapes the problems never produce
+  simwarp.py             one warp of the emitted PTX interpreted in Python: the semantics tests without a GPU
+  test_lowering.py       lowering decisions read off the PTX text (builtins, dtypes, selects, shuffles, decode)
+  test_warp.py           kernel semantics on a simulated warp and on the GPU: shuffles of every length, selects, NaN
   expressions_extra.py   torch expressions for our own problems, one list per category
   problems/              generated from expressions_extra.py (IR + meta + expected, like the open set)
 ```
@@ -41,6 +46,7 @@ python tests/gpu_runner.py r01_array_sum --ref                # emmy's .ref.cu t
 python tests/gpu_runner.py m01_matmul_512 --iters 20 --warmup 3 --repeat 3
 python -m pytest tests -q                                     # everything
 python -m pytest tests -q -k "p4 or a1"                       # by problem id
+python -m pytest tests -q -k "lowering or warp or fold"       # no GPU needed: the gpu variants skip
 ```
 
 Beyond pass/fail the runner reports registers for sm_89 and the local arch, spills, ptxas

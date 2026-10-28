@@ -90,8 +90,8 @@ class Shared:
 class PtxModule:
     entry: str
     params: tuple[Param, ...]
-    target: str = "sm_89"
-    version: str = "8.0"  # sm_89 needs PTX ISA 7.8 or later
+    target: str  # `.target`: the machine, as ptxas spells it
+    version: str  # `.version`: the PTX ISA the body speaks
     max_threads: int | None = None  # `.maxntid`: the launch's block, so ptxas bounds registers to it
     shared: list[Shared] = field(default_factory=list)
     body: list[Item] = field(default_factory=list)

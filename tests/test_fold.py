@@ -73,6 +73,14 @@ def test_arith_folds_immediates() -> None:
     assert arith("/", INDEX(-7), INDEX(-2)) == Imm(3, INDEX)
 
 
+def test_fold_is_exact_past_2_53() -> None:
+    """Folding divides in integers: `x / y` in floats would round a 64-bit quotient."""
+    big = 2**60 + 1
+    assert fold("//", big, 3) == big // 3 and fold("%", big, 3) == big % 3
+    assert fold("//", -big, 3) == -(big // 3) and fold("%", -big, 3) == -(big % 3)
+    assert fold("/", 7.0, 2.0) == 3.5
+
+
 def test_fold_matches_div_rem_s32(gpu: Gpu) -> None:
     """The folded values are what `div.s32` / `rem.s32` compute for the same operands."""
     xs, ys = (np.array(v, np.int32) for v in zip(*PAIRS, strict=True))

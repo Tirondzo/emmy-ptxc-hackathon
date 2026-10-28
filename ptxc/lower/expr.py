@@ -16,7 +16,7 @@ from ..errors import InvalidKernel, Unsupported
 from ..ir import Node
 from ..ptx import Addr, Imm, Reg, Sym, Value, cvt, emit, op, reg, select, truth, unify
 from ..types import F32, INDEX, PRED, S64, U32, U64, ty_of
-from .lowerer import read
+from .lowerer import read, target
 from .symbols import Array
 
 ARITH = {"+": "add", "-": "subtract", "*": "multiply", "/": "divide", "//": "divide", "%": "remainder"}
@@ -50,9 +50,9 @@ def value(e: Node | int | float) -> Value:
 
 
 def builtin(name: str) -> Value:
-    """`thread_idx.x` and friends -> the special register; `warp_size` is a constant."""
+    """`thread_idx.x` and friends -> the special register; `warp_size` is the target's."""
     if name == "warp_size":
-        return INDEX(32)
+        return INDEX(target().warp)
     space, _, axis = name.partition(".")
     if space not in SPECIAL or axis not in ("x", "y", "z"):
         raise Unsupported(f"builtin {name!r}")

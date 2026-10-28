@@ -19,8 +19,12 @@ from pathlib import Path
 import pytest
 from gpu_runner import PROBLEM_DIRS, Gpu, all_problems, run_problem
 
+from ptxc.errors import InvalidKernel, Unsupported
+from ptxc.ir import Kernel
+
 OPEN = PROBLEM_DIRS[0]
 P00 = OPEN / "p00_scalar_add"
+TINY = PROBLEM_DIRS[1] / "p23_tiny"  # one pointwise kernel, k_add_pointwise, checked in with this repo
 
 
 def compile_ir(compiler: str, ir: Path) -> subprocess.CompletedProcess[str]:
@@ -75,6 +79,7 @@ class TestCli:
                 assert len(params) == len(k["arg_order"]), pdir.name
                 for p, name in zip(params, k["arg_order"]):
                     assert p.endswith(name), f"{pdir.name}: param {p!r} is not for arg {name!r}"
+                assert f".maxntid {k['block'][0]}, 1, 1" in r.stdout, f"{pdir.name}: the launch bound is meta.json's block"
 
     def test_deterministic(self, compiler: str) -> None:
         a = compile_ir(compiler, ir_of(OPEN / "f02_row_softmax")).stdout
@@ -120,3 +125,69 @@ class TestArgOrder:
         pdir = self.permuted_copy(src, tmp_path / "p02_constants_last", ["x", "add", "add_c1", "mul_c1"])
         res = run_problem(pdir, compiler=compiler, gpu=gpu)
         assert res["ok"], json.dumps(res, indent=1, default=str)
+
+
+class TestInput:
+    """Whatever is wrong with the two input files is one InvalidKernel line, never a traceback; valid
+    IR ptxc does not lower is Unsupported instead. Both files are read as UTF-8 whatever the locale."""
+
+    @pytest.fixture
+    def ir(self, tmp_path: Path) -> Path:
+        shutil.copytree(TINY, tmp_path / "p")
+        return next((tmp_path / "p").glob("*.ir.json"))
+
+    @staticmethod
+    def meta(ir: Path, edit) -> None:
+        path = ir.with_name("meta.json")
+        meta = json.loads(path.read_text(encoding="utf-8"))
+        edit(meta["kernels"][0])
+        path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+    @staticmethod
+    def one_line(ir: Path) -> str:
+        with pytest.raises(InvalidKernel) as info:
+            Kernel.load(ir)
+        assert "\n" not in str(info.value)
+        return str(info.value)
+
+    @pytest.mark.parametrize("text", ["{}", '{"nodes": 1}', '{"inputs": ["x0"', "[]"], ids=["empty", "no-nodes", "truncated", "list"])
+    def test_broken_json(self, ir: Path, text: str) -> None:
+        ir.write_text(text)
+        assert ir.name in self.one_line(ir)
+
+    def test_not_utf8(self, ir: Path) -> None:
+        ir.write_bytes(b'{"x": "\xff"}')
+        assert ir.name in self.one_line(ir)
+
+    @pytest.mark.parametrize(("old", "new"), [("Tile(", "Tyle("), ("Load(", "Load(zzz=1, ")], ids=["unknown-statement", "unknown-field"])
+    def test_broken_body(self, ir: Path, old: str, new: str) -> None:
+        ir.write_text(ir.read_text().replace(old, new, 1))
+        assert ir.name in self.one_line(ir)
+
+    def test_no_meta(self, ir: Path) -> None:
+        ir.with_name("meta.json").unlink()
+        assert "meta.json" in self.one_line(ir)
+
+    def test_meta_without_the_entry(self, ir: Path) -> None:
+        self.meta(ir, lambda k: k.update(entry="k_other"))
+        assert "k_add_pointwise" in self.one_line(ir)
+
+    def test_meta_names_a_missing_arg(self, ir: Path) -> None:
+        self.meta(ir, lambda k: k["arg_order"].append("ghost"))
+        assert "ghost" in self.one_line(ir)
+
+    def test_unsupported_is_not_malformed(self, ir: Path) -> None:
+        self.meta(ir, lambda k: k["args"][0].update(dtype="f16"))
+        with pytest.raises(Unsupported, match="f16"):
+            Kernel.load(ir)
+
+    def test_reads_utf8(self, ir: Path) -> None:
+        self.meta(ir, lambda k: k.update(code="x \u2218 \u03c3(y)"))
+        assert Kernel.load(ir).entry == "k_add_pointwise"
+
+    def test_cli_reports_one_line(self, compiler: str, tmp_path: Path) -> None:
+        bad = tmp_path / "k.ir.json"
+        bad.write_text("{}")
+        r = compile_ir(compiler, bad)
+        assert r.returncode == 1 and r.stdout == ""
+        assert r.stderr.startswith("ptxc: InvalidKernel: k.ir.json") and r.stderr.count("\n") == 1

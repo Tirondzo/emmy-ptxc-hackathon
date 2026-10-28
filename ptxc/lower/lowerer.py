@@ -1,7 +1,8 @@
 """The lowering: the statement visitor, the main flow of the compiler.
 
-`with Lowering(kernel):` makes the kernel's names and launch the context of every function
-below, the way `with PtxBuilder(module):` makes the module the target of every emission.
+`with Lowering(kernel, target):` makes the kernel's names and launch, and the machine, the context
+of every function below, the way `with PtxBuilder(module):` makes the module the target of every
+emission.
 Rules read the IR top-down and get operands back bottom-up (`expr.value`, `ops.apply`).
 """
 
@@ -13,6 +14,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 from .. import ir
+from ..config import Target
 from ..errors import InvalidKernel, Unsupported
 from ..ir import Body, Kernel, Node
 from ..ptx import Addr, Reg, Sym, Value, cvt, mov, op, reg
@@ -37,6 +39,7 @@ def rule(*kinds: str) -> Callable[[Rule], Rule]:
 @dataclass
 class Lowering:
     kernel: Kernel
+    target: Target
     syms: Symbols = field(default_factory=Symbols)
     smem_used: int = 0  # bytes carved from the pool so far, when shared memory is pooled
     tid: Reg | None = None  # %tid.x once `tid()` has read it
@@ -53,14 +56,18 @@ def lowering() -> Lowering:
     return _current.get()
 
 
+def target() -> Target:
+    return lowering().target
+
+
 def prologue() -> None:
     """Parameters -> global Arrays, plus `lane` and `warp`, which the IR reads but never declares."""
     for buf in lowering().kernel.params:
         param = op("ld.param", U64, Addr(Sym(buf.param_name)))
         base = op("cvta.to.global", U64, param)
         bind(buf.name, Array(buf.name, base, buf.ty, buf.shape, "global"))
-    lane = op("and", B32, tid(), B32(31))
-    warp = op("shr", U32, tid(), U32(5))
+    lane = op("and", B32, tid(), B32(target().lane_mask))
+    warp = op("shr", U32, tid(), U32(target().warp_shift))
     bind("lane", Bound(cvt(lane, INDEX)))
     bind("warp", Bound(cvt(warp, INDEX)))
 
