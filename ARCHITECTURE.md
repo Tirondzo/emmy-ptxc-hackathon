@@ -16,25 +16,29 @@ kernel.ir.json + meta.json -> load -> lower -> render -> PTX
 
 | Stage | Module | Owns | Must not |
 |---|---|---|---|
-| load | `ir.py` | emmy's object model (the only module that imports emmy); the launch config from meta.json | interpret statements |
+| load | `ir.py` | emmy's object model (the only module that imports emmy); the launch config and the tolerance from meta.json | interpret statements |
 | lower | `lower/` | core business logic. One rule per statement kind, names and scopes, expression trees | spell PTX text, pick registers or labels |
-| ops | `ops.py` | legalization of elementwise ops and every numeric choice | know which statement used the op |
+| ops | `ops.py` | legalization of elementwise ops and every numeric choice, including the one the tolerance leaves open (`Numerics`) | know which statement used the op |
 | build | `ptx/builder.py` | registers, labels, structured control flow | know the IR |
 | render | `ptx/printer.py` | PTX layout | make decisions |
 | config | `config.py` | every choice made rather than read from the IR: the `Target` (sm, ISA version, warp, launch limits) and the numeric conventions (`HUGE`, `IDENTITY`); for the developer, never an option | hold opcode text, or a recipe's own numbers |
+| context | `context.py` | the ambient `Lowering` for rules and recipes alike: `lowering()`, `options()`, `target()`, `trace()` | hold state of its own |
 
 `ptx/` knows PTX and nothing about Emmy. Everything in between speaks the IR's field
 vocabulary (`s.body`, `s.index`) and the PTX layer's operands.
 
 We avoid pre-pass analysis to simplify the solution and overall approach to architecture. It's very easy to fall down to multi-pass solution that both blurs responsibility and brings over-complication.
 The IR and meta.json fix every choice correctness depends on. What they leave open is pinned
-once: the machine and the identities in `config.py`, the rounding and the recipes in `ops.py`.
+once: the machine and the identities in `config.py`, the recipes in `ops.py`. The rounding is the
+one choice meta.json decides indirectly: its `rtol` / `atol` say how much a result may move, and
+`ops.Numerics` spends part of that on the faster spellings.
 
 ## Contracts
 
-- **The context is ambient.** `with PtxBuilder(module), Lowering(kernel, target):` in the
-  driver makes the module the target of every emission, the kernel the source of every name
-  and the `Target` the machine, through a `ContextVar` (scoped, reset on exit, per thread). The verbs are plain functions
+- **The context is ambient.** `with PtxBuilder(module), Lowering(kernel, target, options):` in the
+  driver makes the module the target of every emission, the kernel the source of every name, the
+  `Target` the machine and the options (with `Lowering.budget`, what every float recipe may spend) the
+  policy, through a `ContextVar` (`context.py`; scoped, reset on exit, per thread). The verbs are plain functions
   over it: `emit`, `op`, `cvt`, `if_`, `for_` from `ptx`; `read`, `assign`, `array`, `scope`,
   `lower` from `lower`. Emission is eager: nothing reads the context after the `with` closes.
 - **Emit returns an operand.** `expr.value`, `ops.apply` and the builder's `op` / `cvt` /
@@ -78,7 +82,7 @@ once: the machine and the identities in `config.py`, the rounding and the recipe
 | Warp sync masks | `activemask` for `shfl.sync` and `bar.warp.sync`: a sub-warp block (a22 launches 16 threads) or a guarded tile leaves lanes that never arrive, and naming them is undefined | `block.shuffle`, `builder.barrier` |
 | WarpShuffle | a power-of-two length is the butterfly (emmy's only case); any other length folds down onto lane 0 under a `lane + delta < length` guard and broadcasts it, since a butterfly cannot reach every lane; a length beyond `Target.warp` is `InvalidKernel` | `block.warp_shuffle` |
 | TreeHalve | halving tree, barrier outside the branch, root broadcast to every thread | `block.tree_halve` |
-| Rounding | `.rn` on float add / sub / mul (also blocks fma contraction); explicit `fma.rn` inside recipes | `ops.py` |
+| Rounding | an error budget per kernel, `Lowering.budget` (`ops.Budget`): a quarter of meta.json's `rtol` / `atol` (`auto`), nothing (`exact`) or no limit (`fast`). A recipe with a faster spelling asks `allows(ulps, absolute)` with the worst case the PTX ISA states for it and takes it on yes, else the IEEE spelling: add / sub / mul without `.rn` so ptxas fuses mul + add into fma (1 ulp), `div.full` (2), `rcp.approx` / `sqrt.approx` (1), `tanh.approx` (2^12, so from rtol 2e-3), `sin.approx` on an argument reduced into [-pi, pi] (2^-20.4 absolute) or, with `Options.raw_trig` vouching that inputs stay within 100 pi, on the raw one (2^-14.7), `.ftz` on the approximate instructions (2^-126 absolute). A tolerance of zero keeps IEEE `.rn` everywhere: the open set's exact problems are single pointwise ops, where there is nothing to contract. Recipes keep their own `fma.rn` / `mul.rn`; f64 is always `.rn` | `ops.py`, `driver` |
 | Transcendentals | exp / log / rsqrt through `ex2` / `lg2` / `rsqrt.approx` (a few ulp); erf, sin, cos, tanh as polynomials at about 2 ulp, because `tanh.approx` is 2^-11 and `sin.approx` has no range reduction; pow as `ex2(y * lg2(abs x))` with C's sign and NaN rules | `ops.py` |
 | bool | a `.pred` register: comparisons produce it (`setp`), `where` selects on it (`selp`), arithmetic converts it to 1 / 0 and anything nonzero (NaN included) back to true, as C does; in a buffer it is one byte of 0 / 1, as C stores it; `selp` has no predicate form, so a select between predicates goes through 1 / 0 | `builder.cvt`, `builder.select`, `types.storable`, `ops.py` |
 | Coordinates | `//` in a flattened tile index (every pointwise tile of rank >= 2) lowers to `div.s32`: operands are non-negative | `expr.arith` |
@@ -92,11 +96,14 @@ once: the machine and the identities in `config.py`, the rounding and the recipe
 command-line option. `options.py` holds the performance trade-offs the compiler decides on
 its own: the unroll mode and the code-size quota on a loop nest (the register lever: ptxas
 spills when it can interleave too many copies), the factor and thresholds for loops the IR does
-not mark, the `cse` memo (ptxas merges the duplicates itself; the memo keeps the PTX short) and
-`trace` topics. The one command-line option is `--unroll auto|none|force|QUOTA`; everything else
-is set by constructing `Options(...)` (tests, `tests/bench.py`) or by changing a default. The
-measurements behind the defaults are in `tests/FINDINGS.md`. `Options` travels on `Lowering`,
-like everything ambient; there are no environment variables.
+not mark, the `precision` mode (`auto` spends a quarter of the tolerance on fma contraction and
+the approximate instructions; `exact` and `fast` are the two ends), `raw_trig` (the one assumption
+about inputs the IR cannot state: sin / cos arguments within 100 pi), the `cse` memo (ptxas merges
+the duplicates itself; the memo keeps the PTX short) and `trace` topics. The command-line options
+are `--unroll auto|none|force|QUOTA`, `--precision auto|exact|fast` and `--raw-trig`; everything else is set by
+constructing `Options(...)` (tests, `tests/bench.py`) or by changing a default. The measurements
+behind the defaults are in `tests/FINDINGS.md`. `Options` travels on `Lowering`, like everything
+ambient; there are no environment variables.
 
 ## Extending
 
@@ -107,7 +114,8 @@ like everything ambient; there are no environment variables.
 | a dtype | its names (emmy's, and the C spelling `Smem` carries) in `types.NAMES`, a bank in `Ty.bank` and `PREFIX`, conversions in `builder.cvt` |
 | a kernel-wide value | bind it in `lowerer.prologue` |
 | a target | one more `Target` in `config.py`, passed to `compile_file`; then `Unsupported` where an instruction is younger than the machine: `cp.async` (sm_80), `shfl.sync` / `activemask` / `bar.warp.sync` (sm_70), vector `red` (sm_90) |
-| a numeric convention | `config.py` (`HUGE`, `IDENTITY`); rounding and a recipe's own numbers stay in `ops.py` |
+| a numeric convention | `config.py` (`HUGE`, `IDENTITY`); a recipe's own numbers stay in `ops.py` |
+| a faster spelling | one `if allows(ulps=..., absolute=...)` in the recipe, with the bound the ISA states (or one measured), and a test that the GPU keeps it |
 
 ## Deferred, on purpose
 

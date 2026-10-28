@@ -336,15 +336,35 @@ def launch(gpu: Gpu, image: bytes, spec: dict, produced: dict[str, np.ndarray],
 # ---- one problem, the way submit.py drives it ---------------------------------------------
 
 
+def ulp_distance(got: np.ndarray, ref: np.ndarray) -> np.ndarray:
+    """How many f32 values lie between `got` and `ref` (0 when equal, -0 and +0 alike); NaN where either is not finite."""
+
+    def ordered(x: np.ndarray) -> np.ndarray:  # the f32 bit patterns on one monotonic integer scale
+        i = np.ascontiguousarray(x, dtype=np.float32).view(np.int32).astype(np.int64)
+        return np.where(i < 0, -(i & 0x7FFFFFFF), i)
+
+    d = np.abs(ordered(got) - ordered(ref)).astype(np.float64)
+    return np.where(np.isfinite(got) & np.isfinite(ref), d, np.nan)
+
+
 def compare(got: np.ndarray, ref: np.ndarray, rtol: float, atol: float) -> dict:
+    """The problem's check, plus two measures of how much precision the kernel gave away: the
+    largest distance in f32 ulps, and the share of the tolerance the worst element used
+    (0 exact, 1 at the limit, inf when a tolerance of zero was missed)."""
     got = np.asarray(got, dtype=np.float32).reshape(ref.shape)
     g, r = got.astype(np.float64), ref.astype(np.float64)
     diff = np.abs(g - r)
-    bad = ~(diff <= atol + rtol * np.abs(r))  # NaN compares false -> bad, like np.allclose
+    allowed = atol + rtol * np.abs(r)
+    bad = ~(diff <= allowed)  # NaN compares false -> bad, like np.allclose
     finite = diff[np.isfinite(diff)]
+    ulp = ulp_distance(got, ref)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        used = np.where(diff == 0, 0.0, diff / allowed)
     out = {
         "ok": not bool(bad.any()),
         "max_abs_err": float(finite.max()) if finite.size else float("nan"),
+        "max_ulp": float(np.nanmax(ulp)) if np.isfinite(ulp).any() else float("nan"),
+        "tol_used": float(np.nanmax(used)) if finite.size else 0.0,
         "mismatches": int(bad.sum()),
         "size": int(got.size),
         "nan": int(np.isnan(got).sum()),
@@ -474,7 +494,8 @@ def report(res: dict) -> None:
                 print(f"[{e}] ptxas: {w}")
         for name, c in kr["outputs"].items():
             tag = "PASS" if c["ok"] else "FAIL"
-            line = f"[{e}] {tag}  {name}: max abs err {c['max_abs_err']:.3e}  ({kr.get('median_us', '?')} us)"
+            used = "exact" if c["tol_used"] == 0 else f"{c['max_ulp']:.0f} ulp, {c['tol_used']:.1%} of the tolerance"
+            line = f"[{e}] {tag}  {name}: max abs err {c['max_abs_err']:.3e} ({used})  ({kr.get('median_us', '?')} us)"
             if not c["ok"]:
                 line += (f"\n    {c['mismatches']}/{c['size']} outside rtol={res['rtol']} atol={res['atol']}, {c['nan']} NaN;"
                          f" first bad [{c['first_bad']['index']}]: got {c['first_bad']['got']:.6g}, expected {c['first_bad']['expected']:.6g}")

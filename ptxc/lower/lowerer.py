@@ -1,23 +1,23 @@
 """The lowering: the statement visitor, the main flow of the compiler.
 
-`with Lowering(kernel, target):` makes the kernel's names and launch, and the machine, the context
-of every function below, the way `with PtxBuilder(module):` makes the module the target of every
-emission.
+`with Lowering(kernel, target, options):` makes the kernel's names and launch, the machine and the
+options the context of every function below (`context.py` holds the accessors), the way
+`with PtxBuilder(module):` makes the module the target of every emission.
 Rules read the IR top-down and get operands back bottom-up (`expr.value`, `ops.apply`).
 """
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 from .. import ir
 from ..config import Target
+from ..context import current, lowering, options, target, trace  # noqa: F401  the rules import them from here
 from ..errors import InvalidKernel, Unsupported
 from ..ir import Body, Kernel, Node
+from ..ops import Budget
 from ..options import Options
 from ..ptx import Addr, Imm, Reg, Sym, Value, cvt, mov, op, reg
 from ..types import B32, INDEX, U32, U64
@@ -26,7 +26,6 @@ from .symbols import Array, Bound, Symbol, Symbols, Variable
 type Rule = Callable[[Node], None]
 
 RULES: dict[str, Rule] = {}
-_current: ContextVar[Lowering] = ContextVar("lowering")
 
 
 def rule(*kinds: str) -> Callable[[Rule], Rule]:
@@ -47,31 +46,17 @@ class Lowering:
     axes: dict[str, int] = field(default_factory=dict)  # Tile axis -> extent, a bound on its value (trip counts)
     smem_used: int = 0  # bytes carved from the pool so far, when shared memory is pooled
     tid: Reg | None = None  # %tid.x once `tid()` has read it
+    budget: Budget = field(init=False)  # what the float recipes may spend: the kernel's tolerance under `options.precision`
+
+    def __post_init__(self) -> None:
+        self.budget = Budget.decide(self.options.precision, self.kernel.tolerance)
 
     def __enter__(self) -> Lowering:
-        self._token = _current.set(self)
+        self._token = current.set(self)
         return self
 
     def __exit__(self, *exc: object) -> None:
-        _current.reset(self._token)
-
-
-def lowering() -> Lowering:
-    return _current.get()
-
-
-def target() -> Target:
-    return lowering().target
-
-
-def options() -> Options:
-    return lowering().options
-
-
-def trace(topic: str, message: str) -> None:
-    """One line on stderr when `topic` is in `Options.trace`: how a decision was made."""
-    if topic in lowering().options.trace:
-        print(f"ptxc: {topic}: {message}", file=sys.stderr)
+        current.reset(self._token)
 
 
 def prologue() -> None:

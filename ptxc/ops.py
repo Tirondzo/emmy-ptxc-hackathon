@@ -1,9 +1,11 @@
-"""Elementwise ops: name -> recipe.
+"""Elementwise ops: name -> recipe, and the error budget the tolerance leaves them.
 
-Numerics are pinned, not configured: `.rn` on float add / sub / mul (IEEE, and it keeps ptxas
-from contracting mul+add into fma), explicit `fma.rn` inside the polynomial recipes, exp / log /
-rsqrt through the `.approx` instructions (a few ulp), erf / sin / cos / tanh as polynomials at
-about 2 ulp (`tanh.approx` is only 2^-11 accurate and `sin.approx` has no range reduction).
+A recipe with more than one spelling asks the ambient `Budget` whether the faster one still fits,
+`allows(ulps, absolute)`, with the worst case the PTX ISA states for it: add / sub / mul without
+`.rn` (so ptxas may fuse mul + add into fma), `div.full` / `rcp.approx` / `sqrt.approx`,
+`tanh.approx`, `sin.approx` on a reduced or a raw argument, `.ftz` on the approximate instructions.
+Everything else is pinned: explicit `fma.rn` inside the polynomial recipes, exp / log / rsqrt through
+the `.approx` instructions (a few ulp), erf as a polynomial at about 1 ulp.
 
 A recipe takes the result type and its arguments already converted to it. A `raw` recipe takes
 the arguments as they come and converts what it needs: comparisons unify their operands and
@@ -14,8 +16,12 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 
+from .context import lowering, options
 from .errors import Unsupported
+from .ir import Tolerance
+from .options import Precision
 from .ptx import Reg, Value, bitcast, cvt, emit, op, reg, select, setp, truth, unify
 from .types import B32, F32, PRED, S32, U32, Kind, Ty
 
@@ -23,6 +29,62 @@ type Recipe = Callable[..., Value]  # (ty: Ty, *args: Value) -> Value
 
 OPS: dict[str, Recipe] = {}
 RAW: set[str] = set()
+
+
+# ---- the error budget the tolerance leaves -----------------------------------------------------
+
+ULP = 2.0**-23  # one f32 ulp as a relative error, at its largest (just above a power of two)
+SHARE = 4  # the recipes may spend 1/SHARE of the tolerance; the rest stays for the computation's own rounding
+SUBNORMAL = 2.0**-126  # every f32 below this in magnitude is subnormal: what `.ftz` flushes to zero
+
+
+@dataclass(frozen=True)
+class Budget:
+    """What a kernel's float recipes may spend on faster spellings, in the tolerance's own shape. A
+    recipe asks `allows(ulps, absolute)` with the worst case the PTX ISA states for a spelling and
+    takes it when the answer is yes; the IEEE spelling is the fallback. f32 only: f64 is always `.rn`.
+    The kernel's budget sits on the ambient `Lowering`."""
+
+    rtol: float = 0.0
+    atol: float = 0.0
+
+    @classmethod
+    def decide(cls, precision: Precision, tolerance: Tolerance) -> Budget:
+        """`exact` spends nothing, `fast` has no limit, `auto` 1/SHARE of the tolerance."""
+        match precision:
+            case "exact":
+                return cls()
+            case "fast":
+                return cls(math.inf, math.inf)
+        return cls(tolerance.rtol / SHARE, tolerance.atol / SHARE)
+
+    def allows(self, ulps: float = 0.0, absolute: float = 0.0) -> bool:
+        return ulps * ULP <= self.rtol and absolute <= self.atol
+
+    def __str__(self) -> str:
+        if self.rtol == math.inf:
+            return "no limit"
+        if not (self.rtol or self.atol):
+            return "exact"
+        return f"budget {self.rtol / ULP:.0f} ulp relative, {self.atol:.1e} absolute"
+
+
+def allows(ulps: float = 0.0, absolute: float = 0.0) -> bool:
+    """Whether a spelling that is off by up to `ulps` relative and `absolute` fits the kernel's budget."""
+    return lowering().budget.allows(ulps, absolute)
+
+
+def rounded(name: str, ty: Ty) -> str:
+    """`name.rn`, or `name` when the budget allows the 1 ulp of fma contraction; integers as they are."""
+    if not ty.is_float:
+        return name
+    return name if ty == F32 and allows(ulps=1) else f"{name}.rn"
+
+
+def ftz(ty: Ty) -> str:
+    """`.ftz` flushes subnormals to zero, the fast path of the approximate instructions."""
+    return ".ftz" if ty == F32 and allows(absolute=SUBNORMAL) else ""
+
 
 LOG2E = 1.4426950408889634
 LN2 = 0.6931471805599453
@@ -87,21 +149,24 @@ def rint(ty: Ty, x: Value) -> Reg:
 
 @recipe("add")
 def add(ty: Ty, x: Value, y: Value) -> Value:
-    return op("add.rn" if ty.is_float else "add", ty, x, y)
+    return op(rounded("add", ty), ty, x, y)
 
 
 @recipe("subtract")
 def subtract(ty: Ty, x: Value, y: Value) -> Value:
-    return op("sub.rn" if ty.is_float else "sub", ty, x, y)
+    return op(rounded("sub", ty), ty, x, y)
 
 
 @recipe("multiply")
 def multiply(ty: Ty, x: Value, y: Value) -> Value:
-    return op("mul.rn" if ty.is_float else "mul.lo", ty, x, y)
+    """Integers keep the low half of the product (`mul.lo`), as C does."""
+    return op(rounded("mul", ty) if ty.is_float else "mul.lo", ty, x, y)
 
 
 @recipe("divide", "true_divide")
 def divide(ty: Ty, x: Value, y: Value) -> Value:
+    if ty == F32 and allows(ulps=2):  # div.full: 2 ulp over the whole range (div.approx only for |y| in [2^-126, 2^126])
+        return op(f"div.full{ftz(ty)}", ty, x, y)
     return op("div.rn" if ty.is_float else "div", ty, x, y)
 
 
@@ -205,28 +270,32 @@ for _name, _opcode in {"bitwise_and": "and", "bitwise_or": "or", "bitwise_xor": 
 
 @recipe("reciprocal")
 def reciprocal(ty: Ty, x: Value) -> Value:
+    if ty == F32 and allows(ulps=1):  # rcp.approx: 1 ulp
+        return op(f"rcp.approx{ftz(ty)}", ty, x)
     return op(floating("rcp.rn", ty), ty, x)
 
 
 @recipe("sqrt")
 def sqrt(ty: Ty, x: Value) -> Value:
+    if ty == F32 and allows(ulps=1):  # sqrt.approx: 2^-23 relative
+        return op(f"sqrt.approx{ftz(ty)}", ty, x)
     return op(floating("sqrt.rn", ty), ty, x)
 
 
 @recipe("rsqrt")
 def rsqrt(ty: Ty, x: Value) -> Value:
-    return op(floating("rsqrt.approx", ty), ty, x)
+    return op(floating(f"rsqrt.approx{ftz(ty)}", ty), ty, x)
 
 
 @recipe("exp", "exp_fast")
 def exp(ty: Ty, x: Value) -> Value:
     scaled = op("mul.rn", ty, x, ty(LOG2E))
-    return op(floating("ex2.approx", ty, f64=False), ty, scaled)
+    return op(floating(f"ex2.approx{ftz(ty)}", ty, f64=False), ty, scaled)
 
 
 @recipe("log")
 def log(ty: Ty, x: Value) -> Value:
-    lg2 = op(floating("lg2.approx", ty, f64=False), ty, x)
+    lg2 = op(floating(f"lg2.approx{ftz(ty)}", ty, f64=False), ty, x)
     return op("mul.rn", ty, lg2, ty(LN2))
 
 
@@ -285,8 +354,12 @@ TANH = (-0.006287672556936741, 0.021081697195768356, -0.05385489761829376, 0.133
 
 @recipe("tanh")
 def tanh(ty: Ty, x: Value) -> Value:
-    """|x| < 0.55: x + x^3 P(x^2), a minimax fit; above: 1 - 2 / (exp(2|x|) + 1). About 2 ulp."""
+    """`tanh.approx` (one instruction, 2^-11 relative) when the budget has room for it, which needs
+    rtol >= 2e-3. Else |x| < 0.55: x + x^3 P(x^2), a minimax fit; above: 1 - 2 / (exp(2|x|) + 1).
+    About 2 ulp."""
     require_f32("tanh", ty)
+    if allows(ulps=2**12):
+        return op("tanh.approx", ty, x)
     t = op("abs", ty, x)
     e = exp(ty, op("mul.rn", ty, t, ty(2)))
     tail = fma(ty, ty(-2), op("rcp.rn", ty, op("add.rn", ty, e, ty(1))), ty(1))
@@ -332,9 +405,27 @@ def reduce_trig(ty: Ty, x: Value) -> tuple[Value, Reg]:
     return r, q
 
 
+TWO_PI = (6.2831854820251465, -1.7484555314695172e-07)  # 2 pi in two f32 parts
+
+
+def reduce_turns(ty: Ty, x: Value) -> Value:
+    """x - rint(x / 2pi) * 2pi, into [-pi, pi]; exact to about |x| < 1e5 with 2 pi in two parts."""
+    k = rint(ty, op("mul.rn", ty, x, ty(1 / (2 * math.pi))))
+    return fma(ty, k, ty(-TWO_PI[1]), fma(ty, k, ty(-TWO_PI[0]), x))
+
+
 def trig(ty: Ty, x: Value, cosine: bool) -> Value:
-    """sin or cos from the reduced argument: the quadrant picks the polynomial and the sign."""
-    require_f32("cos" if cosine else "sin", ty)
+    """Three spellings, the cheapest that fits first. `sin.approx` on the raw argument: absolute 2^-14.7,
+    which the ISA promises only within 100 pi, so only when the caller vouches for the range
+    (`Options.raw_trig`). `sin.approx` after reducing the argument into [-pi, pi]: absolute 2^-20.4
+    (cos's bound, the looser), three instructions more. Else Cody-Waite reduction and the polynomials:
+    the quadrant picks the polynomial and the sign, about 1 ulp."""
+    name = "cos" if cosine else "sin"
+    require_f32(name, ty)
+    if options().raw_trig and allows(absolute=2**-14.7):
+        return op(f"{name}.approx{ftz(ty)}", ty, x)
+    if allows(absolute=2**-20.4):
+        return op(f"{name}.approx{ftz(ty)}", ty, reduce_turns(ty, x))
     r, q = reduce_trig(ty, x)
     s = op("mul.rn", ty, r, r)
     sin_r = fma(ty, op("mul.rn", ty, horner(ty, s, SIN), s), r, r)

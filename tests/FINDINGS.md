@@ -62,7 +62,7 @@ Every tolerance in the open set is 1e-5 relative or looser for ops like these.
 - `exp` keeps the fast `ex2.approx` form: accurate enough for any f32 input at 1e-5 relative, and
   a Cody-Waite exp would add about five instructions to every softmax and attention inner loop.
 - Float `remainder` / `mod`: emmy's own renderer rejects it, so it cannot be in the hidden set.
-- `.rn` on float add / sub / mul still blocks fma contraction (see Performance).
+- Adjacent loads are not merged into `v2` / `v4` (the `optimize(module)` slot, see Performance).
 
 ## Performance (2026-10-28, evening)
 
@@ -121,6 +121,100 @@ Tuning notes, for the knobs' defaults:
 - correctness does not depend on any of it: the suite runs the loops of every emission path under
   `none`, `auto`, `force` and `cse=False` (396 passed, 2 xfailed).
 
+## Precision (2026-10-29)
+
+The check every problem is scored with is `np.allclose`: an output element passes when
+`|got - expected| <= atol + rtol * |expected|`. `rtol` is the relative part, a share of the
+value itself (1e-3 is about 8400 f32 ulps, 1e-6 about 8); `atol` is the absolute floor that takes
+over where the expected value is near zero and any relative bound would collapse (softmax tails,
+differences that cancel). The expected values are computed in f64 and rounded to f32, so a
+tolerance of zero demands the correctly rounded f32 answer; the open set uses it only for single
+pointwise ops (add, mul, relu).
+
+Emmy's own reference kernels are built with `--use_fast_math` (`emmy/compiler/backend/cuda/nvcc.py`):
+fma contraction, approximate division, square root and reciprocal, flush-to-zero, `__expf`. The
+tolerances were set with that reference passing, so they have room for exactly those spellings.
+ptxc pinned `.rn` on every float add / sub / mul, which the PTX ISA defines as the thing that stops
+ptxas from fusing: "mul/add sequences with no rounding modifiers may be optimized to use
+fused-multiply-add instructions on the target device". Every dot product ran as mul + add.
+
+What changed: `ptxc/ops.py` gives the float recipes an error budget, `Budget`, decided once per
+kernel from meta.json's tolerance: a quarter of `rtol` and of `atol` (`auto`), nothing (`exact`) or
+no limit (`fast`; `Options.precision`, `compile.py --precision`, `trace=("precision",)` prints it).
+A recipe with a faster spelling asks `allows(ulps, absolute)` with the worst case the PTX ISA states
+for it, in the tolerance's own shape, and takes it on yes; the IEEE spelling is the fallback. The
+other three quarters of the tolerance stay for the computation's own rounding and the summation
+order, which it must absorb in any mode.
+
+| spelling | worst case, PTX ISA | asks for | fits from |
+|---|---|---|---|
+| `add.f32`, `sub.f32`, `mul.f32` without `.rn` | ptxas fuses mul + add; against the two-rounding result the fma moves by the product's rounding error, under 1 ulp of the product (and closer to the exact value) | 1 ulp | rtol 4.8e-7 |
+| `div.full.f32` | 2 ulp over the whole range (`div.approx` only for divisors in [2^-126, 2^126]) | 2 ulp | rtol 9.5e-7 |
+| `rcp.approx.f32`, `sqrt.approx.f32` | 1 ulp, 2^-23 relative | 1 ulp | rtol 4.8e-7 |
+| `tanh.approx.f32` | 2^-11 relative over the whole range (125 ulp measured on randn) | 2^12 ulp | rtol 2e-3 |
+| `sin.approx.f32` / `cos.approx.f32` after `x - rint(x / 2pi) * 2pi` (3 instructions, 2 pi in two parts) | absolute 2^-20.5 / 2^-20.4 within [-2pi, 2pi] | 2^-20.4 absolute | atol 2.9e-6 |
+| the same on the raw argument, only with `Options.raw_trig` | absolute 2^-14.7 within 100 pi, best effort beyond | 2^-14.7 absolute | atol 1.5e-4 |
+| `.ftz` on `ex2` / `lg2` / `rsqrt.approx` and on the approximate rcp / sqrt / div | a subnormal result flushes to zero | 2^-126 absolute | atol 4.7e-38 |
+
+A spelling asks for a relative error where the ISA's bound is relative and an absolute one where it
+is absolute, which is what makes tanh and sin fall out differently: `tanh.approx` needs rtol >= 2e-3
+and every tolerance in both sets is 1e-3 or tighter, so the polynomial wins everywhere today and a
+looser hidden problem would get the single instruction. `sin.approx` is bounded only on a range, so
+the argument is reduced into [-pi, pi] first, where the bound holds for any input; the reduction is
+three instructions against the polynomial path's fifteen, and the 1e-3 / 1e-4 tiers take it. Skipping
+the reduction is the one assumption about inputs the IR cannot state, so it sits behind `raw_trig`
+(default off): with it, and atol room for 2^-14.7, `sin.approx` goes straight on the argument, as
+emmy's `__sinf` does. The recipes' own numerics stay pinned in every mode: `fma.rn` and `mul.rn` inside
+the polynomials, pow's double-float `y * log2|x|`, the `mul.rn` by log2e inside exp. f64 arithmetic
+is always `.rn`. Every tolerance in both problem sets is either zero or at least 1e-6, so `auto`
+spends nothing on the former and buys everything but `tanh.approx` and `sin.approx` on the latter
+(our sin problems sit at atol 1e-6); the budget only bites in between.
+
+Measured over all 160 problems (`tests/gpu_runner.py` now reports, per output, the largest distance
+in f32 ulps and the share of the tolerance the worst element used):
+
+| mode | pass | tolerance used, median / max | notes |
+|---|---|---|---|
+| exact | 158 / 160 | 0.19% / 12.25% | the two Select problems, as before |
+| auto (default) | 158 / 160 | 0.19% / 12.25% | identical pass set; 36 problems change bits |
+| fast forced | 153 / 160 | 0.19% / 12.25% | loses p12_div_abs (1 ulp), p19_relu_affine `x * 3 - 1` (64 ulp), p20_three_inputs `x * y + z` (704 ulp), p26_reciprocal (1 ulp), all at rtol = atol = 0, and p42_gelu_tanh at 1e-5 (`tanh.approx` inside `1 + tanh(...)`, 270% of the tolerance); p16_tanh and p84_tanh_wide survive `tanh.approx` at 83% and 88% of theirs, which is what a cost of 2^12 ulp against a budget of 2 ulp predicts |
+
+- The worst users of their tolerance are the same in every mode and come from the pinned
+  transcendentals: p89_exp_wide 12.2% (`ex2.approx` at |x| up to 32), p14_log 11.7%, p47_softplus
+  8.0%, p43_sin_cos 7.6%, p80_gelu_2d 6.4%. Nothing the relaxations touch comes near them.
+- Where `auto` moves the error it moves it by a fraction of a percent of the tolerance, in both
+  directions: m25_rect_small_n 1.18% -> 1.50%, m02_matmul_rect 0.40% -> 0.55%, m11 0.34% -> 0.45%,
+  m14_1024 0.71% -> 0.75%; m16_bias 1.03% -> 0.91%, m18_relu 0.54% -> 0.46%, a17_scaled_v 0.36% ->
+  0.31%, r31_sum_two_inputs 0.22% -> 0.07%. The approximate instructions cost one ulp where they
+  appear alone: p15_sqrt_rsqrt 1 -> 2 ulp, p51_pow_half 0 -> 1, p17_sigmoid 1.16% -> 1.23%.
+- Ulp counts on matmul and attention outputs are in the thousands to millions in every mode
+  (m01 3.0M exact, 2.9M auto) and are not a measure of anything: a dot product of 512 random terms
+  lands near zero often, and one ulp of a result near zero is tiny. The share of the tolerance is
+  the measure, which is why `atol` exists.
+- p20 under `fast` shows what contraction does at tolerance zero: 236 of 1024 elements differ, by
+  at most 9.5e-7 absolute (half an ulp of a product of magnitude up to 20) and 704 ulps of a result
+  where x * y and z cancelled. `auto` keeps `.rn` there.
+
+What it buys (`python tests/bench.py ... -c auto= -c exact=precision=exact --repeats 5`, RTX 5080,
+min over 5 runs of the median of 30 launches; the kernels under 10 us are launch-bound and unchanged):
+
+| problem | auto (default) | exact | emmy reference |
+|---|---|---|---|
+| a12_256 | 380.7 us (179 regs) | 600.8 us (128 regs) | 985.4 us (255 regs, 816 B spill) |
+| m14_1024 | 156.3 us (104 regs) | 217.8 us (80 regs) | 146.2 us (96 regs) |
+| a19_long_keys | 384.8 us (255 regs, 208 B spill) | 445.7 us (255 regs, 348 B spill) | 553.5 us |
+| a01_attention | 55.0 us (255 regs, 212 B spill) | 65.3 us (255 regs, 352 B spill) | 78.6 us (255 regs, 236 B spill) |
+| m01_matmul_512 | 30.5 us (42 regs) | 32.5 us (40 regs) | 29.9 us (40 regs) |
+| a02_attention_128 | 25.2 us | 25.2 us | 35.6 us |
+| r02_big_sum, r03_mean | 11.0, 9.1 us | 11.4, 9.3 us | 13.5, 11.7 us |
+| m02, m21, f01, f02, f03, f22 | within 0.5 us of exact and of the reference | | |
+
+The gain is the fma: half the arithmetic instructions in a dot product, and fewer live registers
+between the mul and the add, which is where a01 and a19 shed a third of their spills. The approximate
+rcp / sqrt / div and `.ftz` are worth about 2 us on a01 and nothing measurable elsewhere; they are
+kept because the reference uses them and the tolerance pays for them. Where `exact` matches `auto`
+(a02, m21) ptxas had nothing to fuse that the schedule left adjacent, or the kernel is bound elsewhere.
+
 ## Coverage
 
 145 own problems: pointwise sizes 7 to 1M, ranks 1 to 4, odd and prime widths, broadcasts, every
@@ -138,7 +232,8 @@ torch.remainder) stay listed under `UNTRACEABLE`.
 ## Reproduce
 
 ```
-python -m pytest tests -q                 # 396 passed, 2 xfailed
+python -m pytest tests -q                 # 426 passed, 3 skipped, 2 xfailed
+python tests/bench.py m01_matmul_512 -c auto= -c exact=precision=exact   # what the tolerance buys
 python tests/gpu_runner.py --all          # the same, as a report with registers and timings
 python tests/gpu_runner.py p85_pow5       # one problem
 python tests/bench.py --all               # the performance table above

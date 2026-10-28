@@ -17,6 +17,7 @@ tests/
   test_lowering.py       lowering decisions read off the PTX text (builtins, dtypes, selects, shuffles, decode)
   test_warp.py           kernel semantics on a simulated warp and on the GPU: shuffles of every length, selects, NaN
   test_unroll.py         the unroll policy and options, the shape each mode emits, every emission path on the GPU
+  test_precision.py      the precision policy over rtol / atol, the spelling each mode emits, every mode on the GPU
   bench.py               ptxc under several option sets against emmy's reference: min over repeats, registers, spills
   expressions_extra.py   torch expressions for our own problems, one list per category
   problems/              generated from expressions_extra.py (IR + meta + expected, like the open set)
@@ -49,15 +50,17 @@ python tests/gpu_runner.py m01_matmul_512 --iters 20 --warmup 3 --repeat 3
 python -m pytest tests -q                                     # everything
 python -m pytest tests -q -k "p4 or a1"                       # by problem id
 python -m pytest tests -q -k "lowering or warp or fold"       # no GPU needed: the gpu variants skip
-python tests/bench.py m01_matmul_512 r02_big_sum              # auto / none / force vs the reference
-python tests/bench.py --all -c x4=unroll_auto=4 -c q512=unroll_quota=512 -c raw=cse=0
-python -c "from ptxc import *; compile_file('<ir>', Options(trace=('unroll',)))" > /dev/null   # one line per loop
+python tests/bench.py m01_matmul_512 r02_big_sum              # auto / none / force / exact vs the reference
+python tests/bench.py --all -c x4=unroll_auto=4 -c q512=unroll_quota=512 -c raw=cse=0 -c fast=precision=fast
+python -c "from ptxc import *; compile_file('<ir>', Options(trace=('unroll', 'precision')))" > /dev/null   # one line per decision
 ```
 
 Beyond pass/fail the runner reports registers for sm_89 and the local arch, spills, ptxas
 warnings, median launch time, out-of-bounds writes (every buffer is fenced with sentinel bytes),
 inputs modified by the kernel, and outputs that differ between repeated launches (a race;
-not counted as a failure when the kernel accumulates with atomics).
+not counted as a failure when the kernel accumulates with atomics). For every checked output it
+also prints how much precision was given away: the largest distance from the expected value in
+f32 ulps, and the share of the tolerance (`atol + rtol * |expected|`) the worst element used.
 
 ## Generating more problems
 

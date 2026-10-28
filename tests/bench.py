@@ -23,7 +23,7 @@ from gpu_runner import PROBLEM_DIRS, Gpu, all_problems, find_problem, run_proble
 
 from ptxc import Options, compile_file  # noqa: E402
 
-DEFAULT_CONFIGS = ["auto=", "none=unroll=none", "force=unroll=force"]
+DEFAULT_CONFIGS = ["auto=", "none=unroll=none", "force=unroll=force", "exact=precision=exact"]
 TYPES = {f.name: f.type for f in fields(Options)}
 
 

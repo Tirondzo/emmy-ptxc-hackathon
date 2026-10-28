@@ -104,11 +104,21 @@ class Launch:
 
 
 @dataclass(frozen=True)
+class Tolerance:
+    """How far an output may sit from the expected value: `|got - expected| <= atol + rtol * |expected|`,
+    the `np.allclose` test the problem is checked with. Absent from meta.json means exact."""
+
+    rtol: float = 0.0
+    atol: float = 0.0
+
+
+@dataclass(frozen=True)
 class Kernel:
     entry: str
     body: Body
     params: tuple[Buffer, ...]  # in meta.json `arg_order`: the signature contract
     launch: Launch
+    tolerance: Tolerance = Tolerance()
 
     @classmethod
     def load(cls, ir_path: Path) -> Kernel:
@@ -136,8 +146,9 @@ class Kernel:
             if any(d != 1 for d in rest + rest_b):
                 raise Unsupported("multi-dimensional launch")
             launch = Launch(grid, block, spec.get("smem_bytes", 0))
+            tolerance = Tolerance(float(meta.get("rtol", 0)), float(meta.get("atol", 0)))
         except CompileError:
             raise
         except Exception as err:  # emmy's parser is not ours: whatever it raises is a malformed input
             raise InvalidKernel(f"{ir_path.name}: {type(err).__name__}: {err}") from err
-        return cls(identifier(op.name), op.body, params, launch)
+        return cls(identifier(op.name), op.body, params, launch, tolerance)
