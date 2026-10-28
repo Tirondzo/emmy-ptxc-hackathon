@@ -41,7 +41,7 @@ REPO = HERE.parent
 DEFAULT_COMPILER = REPO / "compile.py"
 PROBLEM_DIRS = [REPO.parent / "emmy-hackathon-2026" / "problems", HERE / "problems"]
 
-DT = {"f32": np.float32, "f16": np.float16, "f64": np.float64, "i32": np.int32, "i64": np.int64}
+DT = {"f32": np.float32, "f16": np.float16, "f64": np.float64, "i32": np.int32, "i64": np.int64, "bool": np.bool_}
 GUARD = 256  # sentinel bytes before and after every buffer; keeps data 256-byte aligned like cudaMalloc
 SENTINEL = 0xA5
 CONTRACT_ARCH = "sm_89"  # the arch every submission must assemble for

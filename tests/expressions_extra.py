@@ -272,3 +272,46 @@ UNTRACEABLE = {
     "r21_prod", "r29_mean_epilogue", "r30_row_min", "m20_chain_sum", "f12_log_softmax", "f24_var",
 }
 OPEN = [s for s in OPEN if s["id"] not in UNTRACEABLE]
+
+
+# ---- round 2 (2026-10-28): the ops and index forms added to ptxc after the first findings -----------
+# masks in every form emmy renders them, the polynomial transcendentals over wide ranges (tail and
+# core branches, range reduction), pow with negative bases and negative / tensor exponents.
+OPEN += [
+    spec("p70_mask_float", "(torch.randn(1024) > 0).float()", lambda x: [(x > 0).astype(F)], **EXACT),
+    spec("p71_mask_and", "x = torch.randn(1024); torch.where((x > 0) & (x < 1), x, -x)",
+         lambda x: [np.where((x > 0) & (x < 1), x, -x)], **EXACT),
+    spec("p72_mask_not", "x = torch.randn(1024); torch.where(~(x > 0), x, -x)",
+         lambda x: [np.where(~(x > 0), x, -x)], **EXACT),
+    spec("p73_mask_or_mul", "x = torch.randn(1024); ((x > 1) | (x < -1)) * x",
+         lambda x: [((x > 1) | (x < -1)) * x], **EXACT),
+    spec("p74_bool_out", "torch.randn(1024) > 0", lambda x: [x > 0], **EXACT),
+    spec("p75_where_consts", "x = torch.randn(1024); torch.where(x > 0.5, 1.0, 0.0)",
+         lambda x: [np.where(x > 0.5, F(1), F(0))], **EXACT),
+    spec("p76_sigmoid_mask", "x = torch.randn(1024); torch.sigmoid(x) * (x > -1)",
+         lambda x: [(1.0 / (1.0 + np.exp(-x.astype(D)))).astype(F) * (x > -1)], **APPROX),
+    spec("p77_le_ge", "x = torch.randn(1024); y = torch.randn(1024); torch.where(x <= y, x, y) + torch.where(x >= y, x, y)",
+         lambda x, y: [np.minimum(x, y) + np.maximum(x, y)], **EXACT),
+    spec("p78_eq_ne", "x = torch.randn(1024); torch.where(x != torch.abs(x), -x, x) + torch.where(x == torch.abs(x), x, -x)",
+         lambda x: [np.abs(x) * F(2)], **EXACT),
+    spec("p79_erf_wide", "torch.erf(torch.randn(8192) * 3.0)", lambda x: [erf((x * F(3)).astype(D)).astype(F)], **APPROX),
+    spec("p80_gelu_2d", "F.gelu(torch.randn(64, 96))",
+         lambda x: [(0.5 * x.astype(D) * (1 + erf(x.astype(D) / np.sqrt(2)))).astype(F)], **APPROX),
+    spec("p81_sin_wide", "torch.sin(torch.randn(8192) * 30.0)", lambda x: [np.sin((x * F(30)).astype(D)).astype(F)], **APPROX),
+    spec("p82_cos_wide", "torch.cos(torch.randn(8192) * 30.0)", lambda x: [np.cos((x * F(30)).astype(D)).astype(F)], **APPROX),
+    spec("p83_sin_small", "torch.sin(torch.randn(4096) * 0.01)", lambda x: [np.sin((x * F(0.01)).astype(D)).astype(F)], **APPROX),
+    spec("p84_tanh_wide", "torch.tanh(torch.randn(8192) * 4.0)", lambda x: [np.tanh((x * F(4)).astype(D)).astype(F)], **APPROX),
+    spec("p85_pow5", "torch.randn(1024) ** 5", lambda x: [(x.astype(D) ** 5).astype(F)], **APPROX),
+    spec("p86_pow4", "torch.randn(1024) ** 4", lambda x: [(x.astype(D) ** 4).astype(F)], **APPROX),
+    spec("p87_pow_neg", "(torch.abs(torch.randn(1024)) + 0.5) ** -2.0",
+         lambda x: [((np.abs(x) + F(0.5)).astype(D) ** -2.0).astype(F)], **APPROX),
+    spec("p88_pow_tensor_wide", "x = torch.randn(1024); y = torch.randn(1024); (torch.abs(x) + 0.1) ** (y * 3.0)",
+         lambda x, y: [((np.abs(x) + F(0.1)).astype(D) ** (y * F(3)).astype(D)).astype(F)], rtol=1e-4, atol=1e-5),
+    spec("p89_exp_wide", "torch.exp(torch.randn(4096) * 8.0)", lambda x: [np.exp((x * F(8)).astype(D)).astype(F)], **APPROX),
+    spec("p90_log_wide", "torch.log(torch.abs(torch.randn(4096)) * 1000.0 + 1.0)",
+         lambda x: [np.log((np.abs(x) * F(1000) + F(1)).astype(D)).astype(F)], **APPROX),
+    spec("r48_sum_erf", "torch.erf(torch.randn(128, 256)).sum(-1)",
+         lambda x: [erf(x.astype(D)).astype(F).astype(D).sum(-1).astype(F)], knobs=REDUCE_KNOBS, **REDUCE),
+    spec("f48_softmax_tanh", "torch.softmax(torch.tanh(torch.randn(64, 256)), -1)",
+         lambda x: [_softmax(np.tanh(x.astype(D)).astype(F).astype(D)).astype(F)], **FUSED),
+]

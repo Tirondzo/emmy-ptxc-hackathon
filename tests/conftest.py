@@ -13,7 +13,8 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # gpu_runner
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # the ptxc package under test
 
 from gpu_runner import DEFAULT_COMPILER, PROBLEM_DIRS, Gpu, all_problems  # noqa: E402
 

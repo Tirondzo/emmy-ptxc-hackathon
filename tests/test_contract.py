@@ -17,7 +17,6 @@ import time
 from pathlib import Path
 
 import pytest
-
 from gpu_runner import PROBLEM_DIRS, Gpu, all_problems, run_problem
 
 OPEN = PROBLEM_DIRS[0]
