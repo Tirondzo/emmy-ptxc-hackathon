@@ -98,7 +98,7 @@ def tree_halve(s: Node) -> None:
         mutable(name)
     bufs = [array(name) for name in s.bufs]
     tid = read(s.tid_var)
-    slots = [expr.locate(buf, tid) for buf in bufs]
+    slots = [expr.locate_value(buf, tid) for buf in bufs]
     for stride in halving(s.length):
         with if_(active(tid, stride, s.length)):
             partners = [Addr(slot.base, slot.offset + stride * buf.ty.nbytes) for buf, slot in zip(bufs, slots)]
@@ -109,7 +109,7 @@ def tree_halve(s: Node) -> None:
                 emit(f"st.{buf.space}.{buf.ty.ptx}", slot, read(name))
         barrier(s.barrier_id)
     for name, buf in zip(s.state, bufs, strict=True):
-        assign(name, op(f"ld.{buf.space}", buf.ty, expr.locate(buf, None)))
+        assign(name, op(f"ld.{buf.space}", buf.ty, expr.locate_value(buf, None)))
 
 
 def halving(n: int) -> Iterator[int]:

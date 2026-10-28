@@ -39,9 +39,11 @@ once: the machine and the identities in `config.py`, the rounding and the recipe
   `lower` from `lower`. Emission is eager: nothing reads the context after the `with` closes.
 - **Emit returns an operand.** `expr.value`, `ops.apply` and the builder's `op` / `cvt` /
   `setp` return a typed `Reg` or `Imm`. Callers never care how a value was produced, and
-  constants fold on the way up: `expr.linear` turns `(a0 * 4) + 3` into a `[base+12]`
-  displacement. A type applied to a number is an immediate: `INDEX(4)`, `ty(0)`.
-- **One rule per node kind.** `@rule("Kind")` in `lower/{compute,control,block}.py`. An
+  constants fold on the way up: `expr.affine` keeps an index as sum(coefficient * register) +
+  constant, so `(a0 * 4) + 3` is a `[base+12]` displacement and `a1_b * 64 - a1_b * 64` costs
+  nothing; `expr.address` computes one base register per distinct (array, terms) in a scope.
+  A type applied to a number is an immediate: `INDEX(4)`, `ty(0)`.
+- **One rule per node kind.** `@rule("Kind")` in `lower/{compute,control,loops,block}.py`. An
   unknown kind, op, field value or dtype raises `Unsupported` compilation error.
 - **Names are lexically scoped.** An SSA name (`Load`, `Assign`, `Let`) is `Bound` in the
   innermost scope and shadows an outer binding until the block closes, as in C. Loop-carried
@@ -66,6 +68,7 @@ once: the machine and the identities in `config.py`, the rounding and the recipe
 | Launch bound | `.maxntid` from meta.json's block: ptxas bounds registers to what the launch needs | `driver`, `printer` |
 | Launch limits | a block beyond `Target.max_block` or `smem_bytes` beyond `Target.max_smem` is `InvalidKernel` at compile time, not a launch failure | `config.Target.check` |
 | Rasterization | ignored for now. Doesn't affect correctness, only cache hits | `control.tile` |
+| Loop unrolling | the one performance decision, between correct programs only (same order, same barriers). Three shapes: straight (no loop, the axis a constant), rolled, partial (`factor` copies per iteration, then the known remainder as copies or a tail loop). A loop the IR marks `unroll=True` goes straight within the quota, else by the largest divisor of its trip count; an unmarked loop goes straight when small, else by the compiler's factor. The quota is measured on the nest: `expansion` predicts what nested loops become, so an outer loop is decided knowing its body's size, as a bottom-up pass would, in the one pass. The trip count of `for i in tid..N:T` is `N / T` for every thread when the Tile axis `tid` has extent <= T and T divides N. Copies bind the axis to a constant or to `Bound(var, j * step)`, which `expr.affine` folds into displacements, so an unrolled body is loads and FMAs off one base register (binding through an `add` instead costs 14% on the attention kernel) | `loops.py`, `options.py` |
 | Accumulator seed | a `seed=True` loop declares each Accum of its *own* body (not of nested blocks) at its identity, in the enclosing scope, before opening its own; an outer name of the same spelling is shadowed, not reset | `control.seed_accumulators` |
 | Accum | `name <- op(base or name, value)`, `op` through emmy's alias map (`amax` is `maximum`): online softmax rescales the accumulator and passes it as `base` | `compute.accum` |
 | Identities | `config.IDENTITY` by canonical op; a maximum seeds at `-HUGE`, emmy's `-1e30` rather than `-inf`, so online softmax never sees `inf - inf = NaN`; `HUGE` is the one number to change (`math.inf` for IEEE) | `ir.op_identity` |
@@ -82,6 +85,18 @@ once: the machine and the identities in `config.py`, the rounding and the recipe
 | Beyond the contract | `CastExpr`, `FuncCallExpr` and `Builtin` are starred in TASK.md (in no open or hidden problem) but lowered anyway, a line each: a cast is `cvt`, a call is the elementwise recipe at the first float argument's type (else the first argument's), a builtin (`thread_idx.x`, as emmy spells it) is its special register and `warp_size` is `Target.warp` | `expr.value` |
 | Indexing | one coordinate per axis, row-major; an empty index is element 0 (`sum_1[]`); any other count is `InvalidKernel` rather than a guessed flattening | `expr.address` |
 | Type mixes | `cvt` between raw bits and numbers, `setp` on predicates or ordered on bits: `Unsupported` before ptxas sees them | `builder.cvt`, `builder.setp` |
+
+## Options: the trade-offs
+
+`config.py` holds what ptxc assumes about the machine and its numeric conventions, never a
+command-line option. `options.py` holds the performance trade-offs the compiler decides on
+its own: the unroll mode and the code-size quota on a loop nest (the register lever: ptxas
+spills when it can interleave too many copies), the factor and thresholds for loops the IR does
+not mark, the `cse` memo (ptxas merges the duplicates itself; the memo keeps the PTX short) and
+`trace` topics. The one command-line option is `--unroll auto|none|force|QUOTA`; everything else
+is set by constructing `Options(...)` (tests, `tests/bench.py`) or by changing a default. The
+measurements behind the defaults are in `tests/FINDINGS.md`. `Options` travels on `Lowering`,
+like everything ambient; there are no environment variables.
 
 ## Extending
 

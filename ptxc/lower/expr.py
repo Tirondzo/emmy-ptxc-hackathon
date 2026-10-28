@@ -4,20 +4,24 @@ Indices, predicates and loop bounds are small trees: Var, Literal, BinaryExpr, T
 and the documented but unseen CastExpr, FuncCallExpr and Builtin. Each function returns
 where its result lives: a register, or an immediate when every leaf is constant, so
 constants fold on the way up.
+
+Indices are where a kernel's integer work is: `affine` keeps one as sum(coefficient * register)
++ constant, so constants become displacements and equal terms cancel, which ptxas does not do
+for a loop it sees rolled.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Hashable, Sequence
 
 from .. import ir, ops
 from ..errors import InvalidKernel, Unsupported
 from ..ir import Node
-from ..ptx import Addr, Imm, Reg, Sym, Value, cvt, emit, op, reg, select, truth, unify
+from ..ptx import Addr, Imm, Reg, Sym, Value, cvt, emit, materialize, op, reg, select, truth, unify
 from ..types import F32, INDEX, PRED, S64, U32, U64, ty_of
-from .lowerer import read, target
-from .symbols import Array
+from .lowerer import lowering, options, read, target
+from .symbols import Array, Bound, Variable
 
 ARITH = {"+": "add", "-": "subtract", "*": "multiply", "/": "divide", "//": "divide", "%": "remainder"}
 COMPARE = {"==": "equal", "!=": "not_equal", "<": "less", "<=": "less_equal", ">": "greater", ">=": "greater_equal"}
@@ -111,28 +115,122 @@ def ternary(e: Node) -> Value:
     return select(a.ty, a, b, p)
 
 
-def linear(e: Node) -> tuple[Value | None, int]:
-    """`(a0 * 4) + 3` -> (a0 * 4, 3); a constant expression -> (None, 3).
+# ---- indices ------------------------------------------------------------------------
 
-    What turns an unrolled body's neighbouring loads into `[base+12]` displacements and a
-    grouped write into one vector store at the group's base.
-    """
-    if ir.kind(e) == "BinaryExpr" and e.op in ("+", "-"):
-        (lv, lc), (rv, rc) = linear(e.left), linear(e.right)
-        c = lc + rc if e.op == "+" else lc - rc
-        match lv, rv:
-            case None, None:
-                return None, c
-            case _, None:
-                return lv, c
-            case None, _:
-                return (rv if e.op == "+" else ops.apply("negative", rv.ty, [rv])), c
-            case _:
-                return arith(e.op, lv, rv), c
-    v = value(e)
-    if isinstance(v, Imm) and not v.ty.is_float:
-        return None, int(v.value)
-    return v, 0
+
+type Terms = dict[str, tuple[Reg, int]]  # register name -> (register, coefficient), coefficients never zero
+
+
+def affine(e: Node) -> tuple[Terms, int]:
+    """`e` as sum(coefficient * register) + constant: `(a1_b * 64 + a1_u * 2 + 1) - a1_b * 64` is
+    `{a1_u: 2}, 1`. `+`, `-`, `*` by a constant and an unrolled axis's offset distribute; anything
+    else (`/`, `%`, a ternary) is one opaque term."""
+    match ir.kind(e):
+        case "Var":
+            match lowering().syms.lookup(e.name):
+                case Bound(Imm() as v, offset) if not v.ty.is_float:
+                    return {}, int(v.value) + offset
+                case Bound(Reg() as r, offset) if not r.ty.is_float:
+                    return {r.name: (r, 1)}, offset
+                case Variable(reg=r) if not r.ty.is_float:
+                    return {r.name: (r, 1)}, 0
+        case "Literal" if not ty_of(e.dtype).is_float:
+            return {}, int(e.value)
+        case "BinaryExpr" if e.op in ("+", "-"):
+            (lt, lc), (rt, rc) = affine(e.left), affine(e.right)
+            sign = 1 if e.op == "+" else -1
+            return combine(lt, scale(rt, sign)), lc + sign * rc
+        case "BinaryExpr" if e.op == "*":
+            (lt, lc), (rt, rc) = affine(e.left), affine(e.right)
+            if not lt:
+                return scale(rt, lc), lc * rc
+            if not rt:
+                return scale(lt, rc), lc * rc
+            return term(arith("*", realize(lt, lc), realize(rt, rc)))
+    return term(cached(e))
+
+
+def term(v: Value) -> tuple[Terms, int]:
+    """A value as an affine form: a constant, or one register with coefficient 1."""
+    if isinstance(v, Imm):
+        return {}, int(v.value)
+    r = materialize(cvt(v, INDEX))
+    return {r.name: (r, 1)}, 0
+
+
+def scale(terms: Terms, k: int) -> Terms:
+    return {} if k == 0 else {n: (r, c * k) for n, (r, c) in terms.items()}
+
+
+def combine(a: Terms, b: Terms) -> Terms:
+    out = dict(a)
+    for n, (r, c) in b.items():
+        c += out.get(n, (r, 0))[1]
+        if c:
+            out[n] = (r, c)
+        else:
+            out.pop(n, None)
+    return out
+
+
+def realize(terms: Terms, const: int = 0) -> Value:
+    """The affine form as one value: a mul / mad / add chain, or an immediate."""
+    acc: Value | None = None
+    for _, (r, c) in sorted(terms.items()):
+        if acc is None:
+            acc = r if c == 1 else op("mul.lo", INDEX, r, INDEX(c))
+        elif c == 1:
+            acc = op("add", INDEX, acc, r)
+        else:
+            acc = op("mad.lo", INDEX, r, INDEX(c), acc)
+    if acc is None:
+        return INDEX(const)
+    return op("add", INDEX, acc, INDEX(const)) if const else acc
+
+
+def cached(e: Node) -> Value:
+    """`value(e)`, reused within the scope when `e` reads only registers that never change
+    (`Options.cse`; ptxas would merge the duplicates itself)."""
+    syms = lowering().syms
+    if not options().cse or (key := key_of(e)) is None:
+        return value(e)
+    if (v := syms.recall(key)) is None:
+        v = value(e)
+        syms.remember(key, v)
+    return v
+
+
+def key_of(e: Node) -> Hashable | None:
+    """A structural key for `e` under the current bindings; None when it reads a mutable register."""
+    syms = lowering().syms
+    match ir.kind(e):
+        case "Var":
+            match syms.get(e.name):
+                case Bound(Imm() as v, offset):
+                    return ("imm", v.value, offset)
+                case Bound(Reg() as r, offset) if not syms.is_variable(r):
+                    return ("reg", r.name, offset)
+                case _:
+                    return None
+        case "Literal":
+            return ("lit", e.value, str(e.dtype))
+        case "BinaryExpr":
+            return keys("bin", e.op, e.left, e.right)
+        case "TernaryExpr":
+            return keys("tern", None, e.cond, e.if_true, e.if_false)
+        case "CastExpr":
+            return keys("cast", str(e.dtype), e.expr)
+        case "FuncCallExpr":
+            return keys("call", e.name, *e.args)
+        case "Builtin":
+            return ("builtin", e.name)
+        case _:
+            return None
+
+
+def keys(tag: str, info: object, *parts: Node) -> Hashable | None:
+    ks = [key_of(p) for p in parts]
+    return None if any(k is None for k in ks) else (tag, info, *ks)
 
 
 def address(arr: Array, index: Sequence[Node]) -> Addr:
@@ -141,33 +239,43 @@ def address(arr: Array, index: Sequence[Node]) -> Addr:
     rather than flattened by a guess."""
     if index and len(index) != len(arr.shape):
         raise InvalidKernel(f"{len(index)} coordinates into {arr.name}{list(arr.shape)}")
-    flat: Value | None = None
+    terms: Terms = {}
     elems = 0
     for e, stride in zip(index, arr.strides):
-        var, c = linear(e)
+        t, c = affine(e)
+        terms = combine(terms, scale(t, stride))
         elems += c * stride
-        if var is None:
-            continue
-        var = cvt(var, INDEX)
-        if flat is None:
-            flat = var if stride == 1 else op("mul.lo", INDEX, var, INDEX(stride))
-        elif stride == 1:
-            flat = op("add", INDEX, flat, var)
-        else:
-            flat = op("mad.lo", INDEX, var, INDEX(stride), flat)
-    return locate(arr, flat, elems)
+    return locate(arr, terms, elems)
 
 
-def locate(arr: Array, flat: Value | None, elems: int = 0) -> Addr:
-    """The byte address of element `flat + elems`: 64-bit arithmetic for global, 32-bit for shared."""
-    offset = arr.offset + elems * arr.ty.nbytes
+def locate_value(arr: Array, flat: Value | None, elems: int = 0) -> Addr:
+    """The byte address of element `flat + elems`, for callers holding a value rather than an index."""
     if flat is None:
+        return locate(arr, {}, elems)
+    t, c = term(flat)
+    return locate(arr, t, elems + c)
+
+
+def locate(arr: Array, terms: Terms, elems: int) -> Addr:
+    """`[base+displacement]`: the constant part in bytes (plus the array's place in its pool) is the
+    displacement; the terms make the base, 64-bit for global, 32-bit for shared, reused within the
+    scope under `Options.cse`."""
+    offset = arr.offset + elems * arr.ty.nbytes
+    if not terms:
         return Addr(arr.base, offset)
+    syms = lowering().syms
+    key: Hashable | None = ("base", arr.base.name, arr.space, tuple((n, c) for n, (_, c) in sorted(terms.items())))
+    if not options().cse or any(syms.is_variable(r) for r, _ in terms.values()):
+        key = None  # a mutable term: the base is not a function of the key
+    if key is not None and (base := syms.recall(key)) is not None:
+        return Addr(base, offset)
+    flat = realize(terms)
     if arr.space == "global":
         nbytes = reg(S64)
         emit("mul.wide.s32", nbytes, flat, INDEX(arr.ty.nbytes))
         base = op("add", U64, arr.base, cvt(nbytes, U64))
-        return Addr(base, offset)
-    nbytes = op("mul.lo", U32, cvt(flat, U32), U32(arr.ty.nbytes))
-    base = op("add", U32, arr.base, nbytes)
+    else:
+        base = op("add", U32, arr.base, op("mul.lo", U32, cvt(flat, U32), U32(arr.ty.nbytes)))
+    if key is not None:
+        syms.remember(key, base)
     return Addr(base, offset)

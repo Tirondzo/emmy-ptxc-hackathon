@@ -8,13 +8,16 @@ states of WarpShuffle / TreeHalve are Variables declared before their loop. This
 compiler needs no phi nodes. The one invariant between the two: a Bound never aliases a
 Variable's register, or mutation would reach a value that is supposed to be fixed.
 
+The same scopes remember pure index values (`remember` / `recall`), forgotten with the scope,
+so nothing is reused where its register is not defined.
+
 The table is pure data; the Lowerer emits the movs.
 """
 
 from __future__ import annotations
 
 from collections import ChainMap
-from collections.abc import Generator
+from collections.abc import Generator, Hashable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Literal
@@ -27,9 +30,11 @@ from ..types import Ty
 
 @dataclass(frozen=True)
 class Bound:
-    """An SSA value."""
+    """An SSA value, plus the constant an unrolled copy adds to it (`Bound(var, 8)`), which
+    `expr.affine` folds into a displacement; a read outside an index pays the `add`."""
 
     value: Value
+    offset: int = 0
 
 
 @dataclass(frozen=True)
@@ -61,15 +66,16 @@ type Symbol = Bound | Variable | Array
 class Symbols:
     def __init__(self) -> None:
         self._scopes: ChainMap[str, Symbol] = ChainMap()
+        self._memo: ChainMap[Hashable, Value] = ChainMap()  # pure values already computed in a scope
         self._variables: set[str] = set()  # every register a Variable ever owned
 
     @contextmanager
     def scope(self) -> Generator[None]:
-        self._scopes = self._scopes.new_child()
+        self._scopes, self._memo = self._scopes.new_child(), self._memo.new_child()
         try:
             yield
         finally:
-            self._scopes = self._scopes.parents
+            self._scopes, self._memo = self._scopes.parents, self._memo.parents
 
     def bind(self, name: str, symbol: Symbol) -> None:
         self._scopes[name] = symbol
@@ -91,3 +97,9 @@ class Symbols:
         if (symbol := self.get(name)) is None:
             raise InvalidKernel(f"{name!r} is read before it is defined")
         return symbol
+
+    def recall(self, key: Hashable) -> Value | None:
+        return self._memo.get(key)
+
+    def remember(self, key: Hashable, value: Value) -> None:
+        self._memo[key] = value

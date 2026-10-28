@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+from collections.abc import Callable
 import os
 import re
 import shutil
@@ -38,6 +39,7 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
+type Compiler = str | Callable[[Path], str] | None  # a compile.py path, an in-process function, or nothing
 DEFAULT_COMPILER = REPO / "compile.py"
 PROBLEM_DIRS = [REPO.parent / "emmy-hackathon-2026" / "problems", HERE / "problems"]
 
@@ -353,7 +355,9 @@ def compare(got: np.ndarray, ref: np.ndarray, rtol: float, atol: float) -> dict:
     return out
 
 
-def get_ptx(pdir: Path, k: dict, compiler: str | None, ptx_file: str | None, ref: bool, timeout: float) -> tuple[str, str]:
+def get_ptx(pdir: Path, k: dict, compiler: Compiler, ptx_file: str | None, ref: bool, timeout: float) -> tuple[str, str]:
+    """The PTX of kernel `k`: from the reference .cu, from a compiler (a compile.py run as a subprocess, or
+    a Python callable taking the IR path, for in-process options), or from a file."""
     if ref:
         cu_file = pdir / f"{k['entry']}.ref.cu"
         if not cu_file.exists():
@@ -363,6 +367,8 @@ def get_ptx(pdir: Path, k: dict, compiler: str | None, ptx_file: str | None, ref
         ir = next(pdir.glob(f"{k['entry']}.ir.json"), None)
         if ir is None:
             raise RunError("compile", f"no {k['entry']}.ir.json in {pdir}")
+        if callable(compiler):
+            return compiler(ir), f"in-process {ir.name}"
         try:
             r = subprocess.run([sys.executable, compiler, str(ir)], capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -375,7 +381,7 @@ def get_ptx(pdir: Path, k: dict, compiler: str | None, ptx_file: str | None, ref
     raise RunError("compile", "give a PTX file, --compiler or --ref")
 
 
-def run_problem(pdir: Path, *, compiler: str | None = None, ptx_file: str | None = None, ref: bool = False,
+def run_problem(pdir: Path, *, compiler: Compiler = None, ptx_file: str | None = None, ref: bool = False,
                 gpu: Gpu | None = None, warmup: int = 0, iters: int = 1, repeat: int = 1,
                 contract_arch: str | None = CONTRACT_ARCH, compile_timeout: float = 120.0) -> dict:
     meta = json.loads((pdir / "meta.json").read_text())

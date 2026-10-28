@@ -8,6 +8,7 @@ Rules read the IR top-down and get operands back bottom-up (`expr.value`, `ops.a
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from contextvars import ContextVar
@@ -17,7 +18,8 @@ from .. import ir
 from ..config import Target
 from ..errors import InvalidKernel, Unsupported
 from ..ir import Body, Kernel, Node
-from ..ptx import Addr, Reg, Sym, Value, cvt, mov, op, reg
+from ..options import Options
+from ..ptx import Addr, Imm, Reg, Sym, Value, cvt, mov, op, reg
 from ..types import B32, INDEX, U32, U64
 from .symbols import Array, Bound, Symbol, Symbols, Variable
 
@@ -40,7 +42,9 @@ def rule(*kinds: str) -> Callable[[Rule], Rule]:
 class Lowering:
     kernel: Kernel
     target: Target
+    options: Options = field(default_factory=Options)  # the performance trade-offs, see options.py
     syms: Symbols = field(default_factory=Symbols)
+    axes: dict[str, int] = field(default_factory=dict)  # Tile axis -> extent, a bound on its value (trip counts)
     smem_used: int = 0  # bytes carved from the pool so far, when shared memory is pooled
     tid: Reg | None = None  # %tid.x once `tid()` has read it
 
@@ -58,6 +62,16 @@ def lowering() -> Lowering:
 
 def target() -> Target:
     return lowering().target
+
+
+def options() -> Options:
+    return lowering().options
+
+
+def trace(topic: str, message: str) -> None:
+    """One line on stderr when `topic` is in `Options.trace`: how a decision was made."""
+    if topic in lowering().options.trace:
+        print(f"ptxc: {topic}: {message}", file=sys.stderr)
 
 
 def prologue() -> None:
@@ -99,9 +113,15 @@ def bind(name: str, symbol: Symbol) -> None:
 
 
 def read(name: str) -> Value:
+    """The value of a name; an unrolled copy's offset is added here, outside an index (indices go
+    through `expr.affine`, which folds it instead)."""
     match lowering().syms.lookup(name):
-        case Bound(value):
+        case Bound(value, 0):
             return value
+        case Bound(Imm() as v, offset):
+            return v.ty(v.value + offset)
+        case Bound(Reg() as r, offset):
+            return op("add", r.ty, r, r.ty(offset))
         case Variable(reg=r):
             return r
         case _:
@@ -145,8 +165,8 @@ def mutable(name: str) -> None:
     match syms.get(name):
         case Variable():
             return
-        case Bound(value) if syms.local(name):
-            declare(name, value)
+        case Bound() if syms.local(name):
+            declare(name, read(name))
         case Bound():
             raise Unsupported(f"collective state {name!r} is defined outside its block")
         case _:

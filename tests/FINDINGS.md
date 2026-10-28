@@ -62,8 +62,64 @@ Every tolerance in the open set is 1e-5 relative or looser for ops like these.
 - `exp` keeps the fast `ex2.approx` form: accurate enough for any f32 input at 1e-5 relative, and
   a Cody-Waite exp would add about five instructions to every softmax and attention inner loop.
 - Float `remainder` / `mod`: emmy's own renderer rejects it, so it cannot be in the hidden set.
-- Speed is unchanged: matmul about 5x slower than emmy's CUDA (`Loop.unroll` ignored, `.rn`
-  blocking fma contraction), big reductions 2 to 3x, pointwise and fused about 1x.
+- `.rn` on float add / sub / mul still blocks fma contraction (see Performance).
+
+## Performance (2026-10-28, evening)
+
+Before: the open matmul ran 6.7x slower than emmy's CUDA (204 vs 30 us), big reductions 2x, the
+attention kernels 1.1 to 1.3x. The gap was decomposed by hand-editing PTX and reading the
+reference PTX out of nvrtc:
+
+- the k-loop stayed rolled: ptxas gets no unroll hint from PTX and left a 64-iteration loop of
+  ~70 instructions as it was; unrolling it in the compiler (axis bound to an immediate) gave 1.6x;
+- every address was recomputed per access: `(_ks / 64) % 3` and `a1_b * 64 + a1_u * 2 - a1_b * 64`
+  were lowered from scratch for each of the 4 loads of each of the 64 copies, ~3400 integer
+  instructions per stage against ~10 in the reference. This was the remaining 4x and ptxas did not
+  recover it either;
+- the reference also merges adjacent shared loads into `v2` / `v4` (98 loads instead of 256) and
+  contracts mul + add into fma. Neither is done yet.
+
+What changed: `expr.affine` keeps an index as sum(coefficient * register) + constant (constants
+fold into displacements, equal terms cancel); `lower/loops.py` unrolls by the policy in
+`unroll_factor`, with the knobs in `ptxc/options.py` (`compile.py --unroll auto|none|force|QUOTA`;
+the rest through `Options(...)`).
+Rolled loops alone gained from the addressing: m01 204 -> 77 us with `--unroll=none`.
+
+`python tests/bench.py --all` (RTX 5080, min over 3 runs of the median of 30 launches; small
+kernels are launch-bound at about 7 us and noisy by 1 to 2 us; `none` is every loop rolled):
+
+| problem | auto (default) | none | emmy reference |
+|---|---|---|---|
+| a01_attention | 65.2 us (255 regs, 352 B spill) | 87.9 us (128 regs) | 79.6 us (255 regs, 236 B spill) |
+| a02_attention_128 | 25.3 us (80 regs) | 45.9 us | 37.2 us (77 regs) |
+| m01_matmul_512 | 32.5 us (40 regs) | 76.7 us (30 regs) | 30.4 us (40 regs) |
+| m02_matmul_rect | 9.2 us (40 regs) | 9.0 us | 9.4 us |
+| r02_big_sum | 13.3 us (38 regs) | 25.5 us (19 regs) | 15.2 us (38 regs) |
+| r03_mean | 9.2 us (38 regs) | 16.4 us | 11.2 us |
+| f01 / f02 / f03, r01 / r04, p00 to p03 | 7 to 9 us, within noise of the reference in every mode | | |
+
+Tuning notes, for the knobs' defaults:
+
+- the decision is made where the loop is met, in the one pass, but the body is measured after
+  its nested loops are unrolled (`loops.sizes`), so an outer loop is decided knowing how big it
+  becomes, as a bottom-up pass would decide. This is what made a01 faster than the reference: its
+  key loop (133 statements around four 64-step dot products) stays rolled around straight inner
+  loops, 65 us; unrolled by 2 it is 76 us, in full as nvcc does it 92 to 107 us with 2.7 KB spilled;
+- the quota (2048 statements per nest) is the register lever: ptxc's registers are virtual,
+  ptxas allocates under `.maxntid`, and what makes it spill is how many copies it can interleave;
+- unhinted loops: straight when the expansion fits 1024 statements, else x8, unless the body as
+  written is over 64 statements. The attention inner dot products (64 x 4) run 1.6x faster
+  straight than x4 or x8 inside the outer body; r02 / r03 gain 15% straight over x8; x4 is 10%
+  slower than x8 on r02 and x32 is 2x slower. The length limit is on the body as written, not
+  expanded: a02's 16-statement key loop around a straight 128-statement dot product is worth x8
+  (25 us against 37 rolled);
+- the `cse` memo (opaque index subexpressions and address bases computed once per scope) changes
+  no timing, ptxas merges the duplicates itself; it halves the PTX text. `Options(cse=False)` shows
+  the raw lowering;
+- binding an unrolled copy's axis as `Bound(var, j * step)` instead of an `add` is worth 14% on
+  a02 and on a 1M-element reduction: ptxas does not fold the add through the widening multiply;
+- correctness does not depend on any of it: the suite runs the loops of every emission path under
+  `none`, `auto`, `force` and `cse=False` (396 passed, 2 xfailed).
 
 ## Coverage
 
@@ -82,7 +138,8 @@ torch.remainder) stay listed under `UNTRACEABLE`.
 ## Reproduce
 
 ```
-python -m pytest tests -q                 # 166 passed, 2 xfailed
+python -m pytest tests -q                 # 396 passed, 2 xfailed
 python tests/gpu_runner.py --all          # the same, as a report with registers and timings
 python tests/gpu_runner.py p85_pow5       # one problem
+python tests/bench.py --all               # the performance table above
 ```
