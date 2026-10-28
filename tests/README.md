@@ -19,10 +19,12 @@ tests/
 
 ```
 python -m venv .venv                      # at the workspace root, next to both repos
-.venv/Scripts/pip install emmy-ml==0.3.11 numpy requests pytest
-.venv/Scripts/pip install cuda-python nvidia-cuda-nvcc nvidia-cuda-nvrtc   # driver API, ptxas, nvrtc
-.venv/Scripts/pip install torch --index-url https://download.pytorch.org/whl/cu128   # only to generate IRs
+.venv/Scripts/pip install -r emmy-ptxc-hackathon/tests/requirements.txt
 ```
+
+`tests/requirements.txt` pins everything to the versions FINDINGS.md was produced with: emmy-ml and
+numpy, pytest, cuda-python (driver API), nvidia-cuda-nvcc (ptxas) and nvidia-cuda-nvrtc (`--ref`) to
+run the tests; torch (cu128) and scipy only to generate problems; requests only for `submit.py`.
 
 Two Windows quirks of the `emmy` CLI (only needed to *generate* problems, not to run tests):
 

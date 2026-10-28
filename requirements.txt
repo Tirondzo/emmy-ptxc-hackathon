@@ -1,0 +1,2 @@
+# Python 3.12 or newer
+emmy-ml==0.3.11
