@@ -8,8 +8,24 @@ from collections.abc import Iterator, Sequence
 from .. import ir
 from ..errors import InvalidKernel, Unsupported
 from ..ir import Node
-from ..ptx import Addr, Reg, Shared, Sym, Value, Vec, barrier, bitcast, builder, emit, if_, materialize, op, reg, setp
-from ..types import B32, INDEX, PRED, U32
+from ..ptx import (
+    Addr,
+    Reg,
+    Shared,
+    Sym,
+    Value,
+    Vec,
+    barrier,
+    bitcast,
+    builder,
+    emit,
+    if_,
+    materialize,
+    op,
+    reg,
+    setp,
+)
+from ..types import B32, INDEX, PRED, U32, storable
 from . import expr
 from .lowerer import array, assign, bind, lower, lowering, read, rule, scope, seed
 from .symbols import Array, Bound
@@ -20,7 +36,7 @@ POOL = "_smem_pool"  # the one `.extern .shared` array when meta.json launches d
 @rule("Smem")
 def smem(s: Node) -> None:
     """Static: its own `.shared` declaration. Pooled: an offset carved from `POOL` by a running cursor."""
-    ty = ir.ty(s.dtype)
+    ty = storable(ir.ty(s.dtype))
     nbytes = math.prod(s.extents) * ty.nbytes
     align = max(s.align, ty.nbytes)
     shared = builder().module.shared

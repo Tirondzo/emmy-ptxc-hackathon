@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .errors import InvalidKernel, Unsupported
-from .types import Ty, ty_of
+from .types import Ty, storable, ty_of
 
 if TYPE_CHECKING:  # annotations only: ptxc still imports without emmy installed
     from emmy.compiler.dtype import DataType
@@ -134,7 +134,7 @@ class Kernel:
             entry=op.name,
             body=op.body,
             params=tuple(
-                Buffer(n, tuple(args[n]["shape"]), ty_of(args[n]["dtype"]), bool(args[n].get("output")))
+                Buffer(n, tuple(args[n]["shape"]), storable(ty_of(args[n]["dtype"])), bool(args[n].get("output")))
                 for n in spec["arg_order"]
             ),
             launch=Launch(tuple(spec["grid"]), tuple(spec["block"]), spec.get("smem_bytes", 0)),

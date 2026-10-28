@@ -37,7 +37,7 @@ class Ty:
         """The `.reg` declaration this type lives in; s32, u32 and b32 share "b32"."""
         if self.kind is Kind.PRED:
             return "pred"
-        return f"{'f' if self.is_float else 'b'}{self.bits}"
+        return f"{'f' if self.is_float else 'b'}{max(self.bits, 32)}"  # 8-bit values ride in 32-bit registers
 
     def __call__(self, value: int | float) -> Imm:
         """A typed immediate: `INDEX(4)`, `B32(0x1f)`, `ty(0)`."""
@@ -69,8 +69,9 @@ U64 = Ty(Kind.UNSIGNED, 64)
 B32 = Ty(Kind.BITS, 32)
 B64 = Ty(Kind.BITS, 64)
 INDEX = S32
+BOOL = Ty(Kind.UNSIGNED, 8)  # a C bool in memory: one byte, 0 or 1; in registers a bool is PRED
 
-NAMES = {  # emmy's dtype names and the C spellings Smem uses; 16- and 8-bit types absent on purpose
+NAMES = {  # emmy's dtype names and the C spellings Smem uses; 16-bit types absent on purpose
     "f32": F32,
     "float": F32,
     "f64": F64,
@@ -82,6 +83,7 @@ NAMES = {  # emmy's dtype names and the C spellings Smem uses; 16- and 8-bit typ
     "s64": S64,
     "u32": U32,
     "u64": U64,
+    "bool": PRED,  # a predicate register; `storable` makes it a byte in memory
 }
 
 
@@ -89,3 +91,8 @@ def ty_of(name: str) -> Ty:
     if name not in NAMES:
         raise Unsupported(f"dtype {name!r}")
     return NAMES[name]
+
+
+def storable(ty: Ty) -> Ty:
+    """The element type of a buffer or shared array: a bool is stored as C stores it, one byte of 0 or 1."""
+    return BOOL if ty.kind is Kind.PRED else ty

@@ -11,11 +11,13 @@ Emission is eager: nothing reads the current builder after its `with` has closed
 
 from __future__ import annotations
 
+import math
+import operator
 from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from ..types import B32, PRED, U32, Imm, Ty
+from ..types import B32, PRED, U32, Imm, Kind, Ty
 from .code import PREFIX, Instr, Label, Operand, PtxModule, Reg, Sym, Value, dotted
 
 _current: ContextVar[PtxBuilder] = ContextVar("builder")
@@ -82,11 +84,22 @@ def materialize(v: Value) -> Reg:
 
 
 def cvt(src: Value, to: Ty) -> Value:
-    """Numeric conversion; same bank (s32 <-> u32) is a retype without an instruction."""
+    """Numeric conversion; same bank (s32 <-> u32) is a retype without an instruction.
+    To and from a predicate: C's truth rules, nonzero (NaN included) is true and true is 1."""
     if src.ty == to:
         return src
     if isinstance(src, Imm):
+        if to.kind is Kind.PRED or to.bits == 8:
+            return to(int(src.value != 0))
         return to(float(src.value) if to.is_float else int(src.value))
+    if to.bits == 8:  # a bool in memory: C's conversion to bool, then the byte
+        return Reg(op("selp", U32, U32(1), U32(0), materialize(cvt(src, PRED))).name, to)
+    if src.ty.bits == 8:  # zero-extended by the load: widen for free, then convert
+        return cvt(Reg(src.name, U32), to)
+    if to.kind is Kind.PRED:
+        return setp("neu" if src.ty.is_float else "ne", src, src.ty(0))
+    if src.ty.kind is Kind.PRED:
+        return op("selp", to, to(1), to(0), src)
     if src.ty.bank == to.bank:
         return Reg(src.name, to)
     if src.ty.is_float and not to.is_float:
@@ -109,10 +122,28 @@ def bitcast(src: Value, to: Ty) -> Value:
     return dst
 
 
-def setp(cmp: str, a: Value, b: Value) -> Reg:
+COMPARE = {"eq": operator.eq, "ne": operator.ne, "neu": operator.ne, "lt": operator.lt, "le": operator.le,
+           "gt": operator.gt, "ge": operator.ge, "nan": lambda a, b: math.isnan(a) or math.isnan(b)}
+
+
+def setp(cmp: str, a: Value, b: Value) -> Value:
+    """`a cmp b` as a predicate; two immediates fold."""
+    if isinstance(a, Imm) and isinstance(b, Imm):
+        return PRED(int(COMPARE[cmp](a.value, b.value)))
     p = reg(PRED)
     emit(f"setp.{cmp}.{a.ty.ptx}", p, a, b)
     return p
+
+
+def truth(v: Value) -> Reg:
+    """`v` as a predicate register: a branch guard, a `selp` selector."""
+    return materialize(cvt(v, PRED))
+
+
+def unify(a: Value, b: Value) -> tuple[Value, Value]:
+    """A common type for a binary op: float wins, then the wider."""
+    ty = max(a.ty, b.ty, key=lambda t: (t.is_float, t.bits))
+    return cvt(a, ty), cvt(b, ty)
 
 
 # ---- structured control flow -------------------------------------------------

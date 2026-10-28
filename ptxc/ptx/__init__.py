@@ -15,8 +15,25 @@ from .builder import (
     place,
     reg,
     setp,
+    truth,
+    unify,
 )
-from .code import Addr, Imm, Instr, Item, Label, Operand, Param, PtxModule, Reg, Shared, Sym, Value, Vec, dotted
+from .code import (
+    Addr,
+    Imm,
+    Instr,
+    Item,
+    Label,
+    Operand,
+    Param,
+    PtxModule,
+    Reg,
+    Shared,
+    Sym,
+    Value,
+    Vec,
+    dotted,
+)
 from .printer import render
 
 __all__ = [
@@ -51,4 +68,6 @@ __all__ = [
     "reg",
     "render",
     "setp",
+    "truth",
+    "unify",
 ]

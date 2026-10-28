@@ -14,12 +14,12 @@ from collections.abc import Sequence
 from .. import ir, ops
 from ..errors import InvalidKernel, Unsupported
 from ..ir import Node
-from ..ptx import Addr, Imm, Reg, Sym, Value, cvt, emit, op, reg, setp
+from ..ptx import Addr, Imm, Reg, Sym, Value, cvt, emit, op, reg, setp, truth, unify
 from ..types import F32, INDEX, PRED, S64, U32, U64
 from .lowerer import read
 from .symbols import Array
 
-ARITH = {"+": "add", "-": "subtract", "*": "multiply", "/": "divide", "%": "remainder"}
+ARITH = {"+": "add", "-": "subtract", "*": "multiply", "/": "divide", "//": "divide", "%": "remainder"}
 COMPARE = {"==": "eq", "!=": "ne", "<": "lt", "<=": "le", ">": "gt", ">=": "ge"}
 LOGIC = {"&&": "and", "||": "or", "and": "and", "or": "or"}
 SPECIAL = {"threadIdx": "tid", "blockIdx": "ctaid", "blockDim": "ntid", "gridDim": "nctaid"}
@@ -42,7 +42,7 @@ def value(e: Node | int | float) -> Value:
         case "FuncCallExpr":
             args = [value(a) for a in e.args]
             ty = next((a.ty for a in args if a.ty.is_float), args[0].ty)
-            return ops.apply(e.name, ty, [cvt(a, ty) for a in args])
+            return ops.apply(e.name, ty, args)
         case "Builtin":
             space, axis = e.name.split(".")
             return cvt(op("mov", U32, Sym(f"%{SPECIAL[space]}.{axis}")), INDEX)
@@ -51,8 +51,7 @@ def value(e: Node | int | float) -> Value:
 
 
 def predicate(e: Node) -> Reg:
-    v = value(e)
-    return v if v.ty == PRED else setp("ne", v, v.ty(0))
+    return truth(value(e))
 
 
 def binary(e: Node) -> Value:
@@ -81,8 +80,8 @@ def fold(operator: str, x: int | float, y: int | float) -> int | float:
             return x - y
         case "*":
             return x * y
-        case "/":
-            return x / y if isinstance(x, float) or isinstance(y, float) else math.trunc(x / y)  # C division
+        case "/" | "//":  # C division, which is what `//` renders to in emmy too: toward zero, like div.s32
+            return x / y if isinstance(x, float) or isinstance(y, float) else math.trunc(x / y)
         case _:
             return x - y * math.trunc(x / y)  # C remainder
 
@@ -91,12 +90,6 @@ def ternary(e: Node) -> Value:
     p = predicate(e.cond)
     a, b = unify(value(e.if_true), value(e.if_false))
     return op("selp", a.ty, a, b, p)
-
-
-def unify(a: Value, b: Value) -> tuple[Value, Value]:
-    """A common type for a binary op: float wins, then the wider."""
-    ty = max(a.ty, b.ty, key=lambda t: (t.is_float, t.bits))
-    return cvt(a, ty), cvt(b, ty)
 
 
 def linear(e: Node) -> tuple[Value | None, int]:

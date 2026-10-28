@@ -17,7 +17,7 @@ def assign_(s: Node) -> None:
     """`name = op(args)`. `dtype` is None in every combine_states body, so the fallback is load-bearing."""
     args = [read(name) for name in s.args]
     ty = ir.ty(s.dtype) or args[0].ty
-    assign(s.name, ops.apply(ir.op_name(s.op), ty, [cvt(a, ty) for a in args]))
+    assign(s.name, ops.apply(ir.op_name(s.op), ty, args))
 
 
 @rule("Let")
@@ -39,16 +39,17 @@ def accum(s: Node) -> None:
         raise InvalidKernel(f"accumulator {s.name!r} is not seeded by its loop or an Init")
     args = [read(s.base or s.name), read(s.value)]
     ty = ir.ty(s.dtype) or args[0].ty
-    assign(s.name, ops.apply(ir.op_name(s.op), ty, [cvt(a, ty) for a in args]))
+    assign(s.name, ops.apply(ir.op_name(s.op), ty, args))
 
 
 @rule("Load")
 def load(s: Node) -> None:
+    """Values arrive at the buffer's element type and are converted to `dtype` if it says otherwise."""
     arr = array(s.input)
     ty = ir.ty(s.dtype) or arr.ty
-    regs = load_values(arr, expr.address(arr, s.index), ty, len(s.names))
+    regs = load_values(arr, expr.address(arr, s.index), arr.ty, len(s.names))
     for name, r in zip(s.names, regs, strict=True):
-        assign(name, r)
+        assign(name, cvt(r, ty))
 
 
 @rule("Write")
@@ -56,8 +57,7 @@ def write(s: Node) -> None:
     if s.swizzle != "NONE":
         raise Unsupported(f"swizzle {s.swizzle}")
     arr = array(s.output)
-    ty = ir.ty(s.value_dtype) or arr.ty
-    regs = [materialize(cvt(read(name), ty)) for name in s.values]
+    regs = [materialize(cvt(read(name), arr.ty)) for name in s.values]  # `value_dtype` describes the values; a store converts
     addr = expr.address(arr, s.index)
     if s.atomic:
         add_values(arr, addr, regs)
@@ -89,6 +89,6 @@ def accesses(addr: Addr, regs: list[Reg]) -> list[tuple[str | None, Addr, Reg | 
     n, ty = len(regs), regs[0].ty
     if n == 1:
         return [(None, addr, regs[0])]
-    if n in (2, 4) and n * ty.nbytes <= 16:
+    if n in (2, 4) and 4 <= n * ty.nbytes <= 16:
         return [(f"v{n}", addr, Vec(tuple(regs)))]
     return [(None, Addr(addr.base, addr.offset + i * ty.nbytes), r) for i, r in enumerate(regs)]

@@ -59,7 +59,10 @@ leave open are pinned once in `ops.py`.
 | Shared memory | `smem_bytes > 0` -> one `.extern` pool carved by a running cursor; else static arrays | `block.smem` |
 | Combines | `combine_states` instantiated per step in a fresh scope with `state_b` bound; its Assigns mutate the states | `block.combine` |
 | TreeHalve | halving tree, barrier outside the branch, root broadcast to every thread | `block.tree_halve` |
-| Rounding | `.rn` on float add / sub / mul (also blocks fma contraction), `.approx` ignored | `ops.py` |
+| Rounding | `.rn` on float add / sub / mul (also blocks fma contraction); explicit `fma.rn` inside recipes | `ops.py` |
+| Transcendentals | exp / log / rsqrt through `ex2` / `lg2` / `rsqrt.approx` (a few ulp); erf, sin, cos, tanh as polynomials at about 2 ulp, because `tanh.approx` is 2^-11 and `sin.approx` has no range reduction; pow as `ex2(y * lg2(abs x))` with C's sign and NaN rules | `ops.py` |
+| bool | a `.pred` register: comparisons produce it (`setp`), `where` selects on it (`selp`), arithmetic converts it to 1 / 0 and anything nonzero (NaN included) back to true, as C does; in a buffer it is one byte of 0 / 1, as C stores it | `builder.cvt`, `types.storable`, `ops.py` |
+| Coordinates | `//` in a flattened tile index (every pointwise tile of rank >= 2) lowers to `div.s32`: operands are non-negative | `expr.arith` |
 
 ## Extending
 
