@@ -102,34 +102,40 @@ def declare(name: str, init: Value) -> Reg:
 
 
 def assign(name: str, value: Value) -> None:
-    """Variable -> `mov` into its register. Unbound, or bound in the innermost scope ->
-    rebind as Bound. Bound in an enclosing scope -> InvalidKernel.
-
-    The IR is trusted to be SSA. A name redefined from inside a nested block (a loop
-    body, a Cond branch, a combine instantiation) is either loop-carried state, which
-    emmy marks with Accum or Init, or a value defined on one path only. Rebinding it
-    would silently read a stale register, so the compiler refuses instead of analysing
-    data flow.
+    """Variable -> `mov` into its register. Anything else -> Bound in the innermost scope,
+    shadowing an outer binding until the block closes, as a C block would. A Bound never
+    aliases a Variable's register: that value is copied first, so later mutation of the
+    Variable cannot reach it. The IR's Accum / Init marks say what is loop-carried; nothing
+    here analyses data flow.
     """
     syms = lowering().syms
     match syms.get(name):
         case Variable(reg=r):
-            if value != r:  # TODO: the producing instruction could target `r` directly; ignored for now
+            if not same(value, r):  # TODO: the producing instruction could target `r` directly
                 mov(r, value)
-        case None:
-            syms.bind(name, Bound(value))
-        case _ if syms.local(name):
-            syms.bind(name, Bound(value))
         case _:
-            raise InvalidKernel(f"{name!r} is redefined from a nested block")
+            syms.bind(name, Bound(op("mov", value.ty, value) if syms.is_variable(value) else value))
 
 
-def seed(name: str, value: Value) -> None:
-    """Loop-carried state at its start value: assign if already a Variable, else declare."""
-    if isinstance(lowering().syms.get(name), Variable):
-        assign(name, value)
-    else:
-        declare(name, value)
+def same(a: Value, b: Reg) -> bool:
+    """One register, whatever type `cvt` retyped it to."""
+    return isinstance(a, Reg) and a.name == b.name
+
+
+def mutable(name: str) -> None:
+    """A collective's state, which its combine mutates in place: a Variable already; a Bound of
+    this scope becomes one; a Bound of an enclosing scope would turn into a shadow that dies
+    with the block, so it is refused rather than silently lost."""
+    syms = lowering().syms
+    match syms.get(name):
+        case Variable():
+            return
+        case Bound(value) if syms.local(name):
+            declare(name, value)
+        case Bound():
+            raise Unsupported(f"collective state {name!r} is defined outside its block")
+        case _:
+            raise InvalidKernel(f"{name!r} is not a value")
 
 
 def array(name: str) -> Array:

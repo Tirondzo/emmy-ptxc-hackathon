@@ -117,12 +117,14 @@ def linear(e: Node) -> tuple[Value | None, int]:
 
 
 def address(arr: Array, index: Sequence[Node]) -> Addr:
-    """`arr[index]`, row-major; the constant part of every coordinate becomes the displacement."""
-    if len(index) > len(arr.shape):
+    """`arr[index]`, row-major; the constant part of every coordinate becomes the displacement.
+    One coordinate per axis, or none for element 0 (`sum_1[]`): any other count is refused
+    rather than flattened by a guess."""
+    if index and len(index) != len(arr.shape):
         raise InvalidKernel(f"{len(index)} coordinates into {arr.name}{list(arr.shape)}")
     flat: Value | None = None
     elems = 0
-    for e, stride in zip(index, arr.strides):  # fewer coordinates than axes: the rest are 0 (`sum_1[]`)
+    for e, stride in zip(index, arr.strides):
         var, c = linear(e)
         elems += c * stride
         if var is None:

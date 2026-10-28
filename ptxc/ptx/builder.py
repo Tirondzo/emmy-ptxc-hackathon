@@ -17,6 +17,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 
+from ..errors import Unsupported
 from ..types import B32, PRED, U32, Imm, Kind, Ty
 from .code import PREFIX, Instr, Label, Operand, PtxModule, Reg, Sym, Value, dotted
 
@@ -80,7 +81,11 @@ def mov(dst: Reg, src: Value) -> None:
 
 
 def materialize(v: Value) -> Reg:
-    return v if isinstance(v, Reg) else op("mov", v.ty, v)
+    if isinstance(v, Reg):
+        return v
+    if v.ty.bits == 8:  # no 8-bit registers: the byte rides in a .b32, as it does after a load
+        return Reg(op("mov", U32, U32(int(v.value))).name, v.ty)
+    return op("mov", v.ty, v)
 
 
 def cvt(src: Value, to: Ty) -> Value:
@@ -102,6 +107,8 @@ def cvt(src: Value, to: Ty) -> Value:
         return op("selp", to, to(1), to(0), src)
     if src.ty.bank == to.bank:
         return Reg(src.name, to)
+    if Kind.BITS in (src.ty.kind, to.kind):
+        raise Unsupported(f"cvt.{to.ptx}.{src.ty.ptx}: raw bits have no numeric value")
     if src.ty.is_float and not to.is_float:
         rnd = "rzi"  # C truncation
     elif to.is_float and (not src.ty.is_float or src.ty.bits > to.bits):
@@ -130,6 +137,8 @@ def setp(cmp: str, a: Value, b: Value) -> Value:
     """`a cmp b` as a predicate; two immediates fold."""
     if isinstance(a, Imm) and isinstance(b, Imm):
         return PRED(int(COMPARE[cmp](a.value, b.value)))
+    if a.ty.kind is Kind.PRED or (a.ty.kind is Kind.BITS and cmp not in ("eq", "ne")):
+        raise Unsupported(f"setp.{cmp}.{a.ty.ptx}")
     p = reg(PRED)
     emit(f"setp.{cmp}.{a.ty.ptx}", p, a, b)
     return p
@@ -171,9 +180,14 @@ def for_(var: Reg, end: Value, step: Value) -> Generator[None]:
 
 def barrier(barrier_id: int = 0, count: int | None = None, warp: bool = False) -> None:
     if warp:
-        emit("bar.warp.sync", B32(0xFFFFFFFF))
+        emit("bar.warp.sync", activemask())
     else:
         emit("bar.sync", U32(barrier_id), *([U32(count)] if count else []))
+
+
+def activemask() -> Reg:
+    """The lanes of this warp that are executing: the member mask of every warp-level sync."""
+    return op("activemask", B32)
 
 
 class Branch:

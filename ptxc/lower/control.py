@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator
 from contextlib import nullcontext
 
 from .. import ir
@@ -12,7 +11,7 @@ from ..ir import Body, Node
 from ..ptx import Reg, Sym, Value, cvt, for_, if_, mov, op, reg, setp
 from ..types import INDEX, U32
 from . import expr
-from .lowerer import assign, bind, lower, lowering, rule, scope, seed
+from .lowerer import assign, bind, declare, lower, lowering, rule, scope
 from .symbols import Bound
 
 
@@ -80,20 +79,14 @@ def counted_loop(axis: str, start: Value, end: Value, step: Value, body: Body, s
 
 
 def seed_accumulators(body: Body) -> None:
-    """Seed each Accum of the loop's immediate body (through Cond, not nested loops) at its identity."""
-    accums = {s.name: s for s in immediate(body) if ir.kind(s) == "Accum"}
+    """Declare each Accum of the loop's own body at its identity: a fresh Variable in the enclosing
+    scope, shadowing an outer name of the same spelling. An Accum inside a nested block belongs
+    to whatever that name denotes there."""
+    accums = {s.name: s for s in body if ir.kind(s) == "Accum"}
     for name, s in accums.items():
         if (ty := ir.ty(s.dtype)) is None:
             raise Unsupported(f"untyped accumulator {name!r}")
-        seed(name, ty(ir.op_identity(s.op)))
-
-
-def immediate(body: Body) -> Iterator[Node]:
-    for s in body:
-        yield s
-        if ir.kind(s) == "Cond":
-            yield from immediate(s.body)
-            yield from immediate(s.else_body)
+        declare(name, ty(ir.op_identity(s.op)))
 
 
 @rule("Cond")

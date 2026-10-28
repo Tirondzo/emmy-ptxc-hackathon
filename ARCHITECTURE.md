@@ -42,7 +42,13 @@ leave open are pinned once in `ops.py`.
   displacement. A type applied to a number is an immediate: `INDEX(4)`, `ty(0)`.
 - **One rule per node kind.** `@rule("Kind")` in `lower/{compute,control,block}.py`. An
   unknown kind, op, field value or dtype raises `Unsupported` compilation error.
-- **Rebinding vs mutation.** SSA names are `Bound` and rebound freely. Assume `Load`, `Assign`, `Let` are bound to SSA. An SSA name redefined from inside a nested block is `InvalidKernel`. We trust the IR's `Accum` / `Init` marks instead of analysing data flow.
+- **Names are lexically scoped.** An SSA name (`Load`, `Assign`, `Let`) is `Bound` in the
+  innermost scope and shadows an outer binding until the block closes, as in C. Loop-carried
+  state (`Accum`, `Init`, a collective's states) is a `Variable`: one register mutated by `mov`.
+  Three invariants in `lower/lowerer.py` keep the two apart without analysing data flow: a
+  Bound never aliases a Variable's register (the value is copied first); a `seed=True` loop
+  *declares* its accumulators in the enclosing scope; a collective's state is a Variable or a
+  Bound of the current scope, anything else is `Unsupported`.
 - **Registers are per bank.** `Ty.bank` maps s32 / u32 / b32 to one `.b32` bank; register
   names and counts are per bank, never per type.
 
@@ -52,17 +58,20 @@ leave open are pinned once in `ops.py`.
 |---|---|---|
 | Tile decode | row-major over every listed axis; guard `gid < cells` when the launch has spare threads | `control.tile` |
 | Rasterization | ignored for now. Doesn't affect correctness, only cache hits | `control.tile` |
-| Accumulator seed | a `seed=True` loop seeds the Accums of its *immediate* body (through Cond, not nested loops), in the enclosing scope, before opening its own | `control.seed_accumulators` |
+| Accumulator seed | a `seed=True` loop declares each Accum of its *own* body (not of nested blocks) at its identity, in the enclosing scope, before opening its own; an outer name of the same spelling is shadowed, not reset | `control.seed_accumulators` |
 | Accum | `name <- op(base or name, value)`: online softmax rescales the accumulator and passes it as `base` | `compute.accum` |
 | Max identity | emmy's `-1e30`, not `-inf`: avoids `inf - inf = NaN` in online softmax | `ir.op_identity` |
 | Implicit names | `lane`, `warp` bound in the prologue | `lowerer.prologue` |
 | Shared memory | `smem_bytes > 0` -> one `.extern` pool carved by a running cursor; else static arrays | `block.smem` |
-| Combines | `combine_states` instantiated per step in a fresh scope with `state_b` bound; its Assigns mutate the states | `block.combine` |
+| Combines | the states are made Variables first (`lowerer.mutable`); `combine_states` is instantiated per step in a fresh scope with `state_b` bound, and its Assigns mutate them | `block.combine` |
+| Warp sync masks | `activemask` for `shfl.sync` and `bar.warp.sync`: a sub-warp block (a22 launches 16 threads) or a guarded tile leaves lanes that never arrive, and naming them is undefined | `block.shuffle`, `builder.barrier` |
 | TreeHalve | halving tree, barrier outside the branch, root broadcast to every thread | `block.tree_halve` |
 | Rounding | `.rn` on float add / sub / mul (also blocks fma contraction); explicit `fma.rn` inside recipes | `ops.py` |
 | Transcendentals | exp / log / rsqrt through `ex2` / `lg2` / `rsqrt.approx` (a few ulp); erf, sin, cos, tanh as polynomials at about 2 ulp, because `tanh.approx` is 2^-11 and `sin.approx` has no range reduction; pow as `ex2(y * lg2(abs x))` with C's sign and NaN rules | `ops.py` |
 | bool | a `.pred` register: comparisons produce it (`setp`), `where` selects on it (`selp`), arithmetic converts it to 1 / 0 and anything nonzero (NaN included) back to true, as C does; in a buffer it is one byte of 0 / 1, as C stores it | `builder.cvt`, `types.storable`, `ops.py` |
 | Coordinates | `//` in a flattened tile index (every pointwise tile of rank >= 2) lowers to `div.s32`: operands are non-negative | `expr.arith` |
+| Indexing | one coordinate per axis, row-major; an empty index is element 0 (`sum_1[]`); any other count is `InvalidKernel` rather than a guessed flattening | `expr.address` |
+| Type mixes | `cvt` between raw bits and numbers, `setp` on predicates or ordered on bits: `Unsupported` before ptxas sees them | `builder.cvt`, `builder.setp` |
 
 ## Extending
 

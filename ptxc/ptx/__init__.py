@@ -1,6 +1,7 @@
 from .builder import (
     Branch,
     PtxBuilder,
+    activemask,
     barrier,
     bitcast,
     builder,
@@ -52,6 +53,7 @@ __all__ = [
     "Sym",
     "Value",
     "Vec",
+    "activemask",
     "barrier",
     "bitcast",
     "builder",

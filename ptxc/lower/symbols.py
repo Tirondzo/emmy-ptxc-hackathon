@@ -5,7 +5,8 @@ may be rebound freely: in straight-line code the next read sees the new value. A
 loop-carried name must be a `Variable`, a register that is *mutated* in place, because the
 next iteration reads the register the loop header saw. Accumulators, `Init` state and the
 states of WarpShuffle / TreeHalve are Variables declared before their loop. This is why the
-compiler needs no phi nodes.
+compiler needs no phi nodes. The one invariant between the two: a Bound never aliases a
+Variable's register, or mutation would reach a value that is supposed to be fixed.
 
 The table is pure data; the Lowerer emits the movs.
 """
@@ -13,7 +14,7 @@ The table is pure data; the Lowerer emits the movs.
 from __future__ import annotations
 
 from collections import ChainMap
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Literal
@@ -60,9 +61,10 @@ type Symbol = Bound | Variable | Array
 class Symbols:
     def __init__(self) -> None:
         self._scopes: ChainMap[str, Symbol] = ChainMap()
+        self._variables: set[str] = set()  # every register a Variable ever owned
 
     @contextmanager
-    def scope(self) -> Iterator[None]:
+    def scope(self) -> Generator[None]:
         self._scopes = self._scopes.new_child()
         try:
             yield
@@ -71,6 +73,12 @@ class Symbols:
 
     def bind(self, name: str, symbol: Symbol) -> None:
         self._scopes[name] = symbol
+        if isinstance(symbol, Variable):
+            self._variables.add(symbol.reg.name)
+
+    def is_variable(self, value: Value) -> bool:
+        """`value` is a Variable's register, under whatever type `cvt` retyped it to."""
+        return isinstance(value, Reg) and value.name in self._variables
 
     def get(self, name: str) -> Symbol | None:
         return self._scopes.get(name)

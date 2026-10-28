@@ -15,6 +15,7 @@ from ..ptx import (
     Sym,
     Value,
     Vec,
+    activemask,
     barrier,
     bitcast,
     builder,
@@ -27,7 +28,7 @@ from ..ptx import (
 )
 from ..types import B32, INDEX, PRED, U32, storable
 from . import expr
-from .lowerer import array, assign, bind, lower, lowering, read, rule, scope, seed
+from .lowerer import array, assign, bind, lower, lowering, mutable, read, rule, scope
 from .symbols import Array, Bound
 
 POOL = "_smem_pool"  # the one `.extern .shared` array when meta.json launches dynamic shared memory
@@ -62,11 +63,15 @@ def sync(s: Node) -> None:
 
 @rule("WarpShuffle")
 def warp_shuffle(s: Node) -> None:
-    """Butterfly: for each delta, every state meets its lane ^ delta partner and `combine` folds it in."""
+    """Butterfly: for each delta, every state meets its lane ^ delta partner and `combine` folds it in.
+    The member mask is `activemask`: a sub-warp block or a guarded tile leaves lanes that never arrive."""
+    if s.length > 32:
+        raise InvalidKernel(f"WarpShuffle over {s.length} lanes: a warp has 32")
     for name in s.state:
-        seed(name, read(name))
+        mutable(name)
+    mask = activemask()
     for delta in halving(s.length):
-        combine(s, [shuffle(read(name), delta, s.length) for name in s.state])
+        combine(s, [shuffle(read(name), delta, s.length, mask) for name in s.state])
 
 
 @rule("TreeHalve")
@@ -76,7 +81,7 @@ def tree_halve(s: Node) -> None:
     if s.inner is not None or s.barrier_count is not None:
         raise Unsupported("segmented TreeHalve")
     for name in s.state:
-        seed(name, read(name))
+        mutable(name)
     bufs = [array(name) for name in s.bufs]
     tid = read(s.tid_var)
     slots = [expr.locate(buf, tid) for buf in bufs]
@@ -110,12 +115,12 @@ def active(tid: Value, stride: int, length: int) -> Reg:
     return op("and", PRED, p, setp("lt", partner, INDEX(length)))
 
 
-def shuffle(x: Value, delta: int, length: int) -> Value:
+def shuffle(x: Value, delta: int, length: int, mask: Reg) -> Value:
     """`shfl.sync.bfly.b32` of one value; a 64-bit value goes as two halves."""
     clamp = B32(((32 - length) << 8) | 0x1F)
 
     def bfly(bits: Value) -> Reg:
-        return op("shfl.sync.bfly", B32, bits, INDEX(delta), clamp, B32(0xFFFFFFFF))
+        return op("shfl.sync.bfly", B32, bits, INDEX(delta), clamp, mask)
 
     if x.ty.bits == 32:
         return bitcast(bfly(bitcast(x, B32)), x.ty)

@@ -26,6 +26,9 @@ class Ty:
 
     @property
     def nbytes(self) -> int:
+        """Size in memory; a predicate has none (`storable` gives the byte a bool is stored as)."""
+        if self.kind is Kind.PRED:
+            raise TypeError("a predicate has no size in memory")
         return self.bits // 8
 
     @property
