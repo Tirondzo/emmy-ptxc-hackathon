@@ -51,6 +51,11 @@ leave open are pinned once in `ops.py`.
   Bound of the current scope, anything else is `Unsupported`.
 - **Registers are per bank.** `Ty.bank` maps s32 / u32 / b32 to one `.b32` bank; register
   names and counts are per bank, never per type.
+- **Every input fault is one line.** Whatever the IR or meta.json gets wrong is a `CompileError`
+  (`InvalidKernel`: breaks the IR's rules or disagrees with meta.json; `Unsupported`: valid IR
+  ptxc does not lower yet), printed as one line on stderr with exit 1 and nothing on stdout.
+  `ir.Kernel.load` turns missing or malformed files and absent keys into `InvalidKernel`; a
+  Python traceback is a compiler bug, never an input.
 
 ## Decided by the IR's semantics
 
@@ -70,6 +75,7 @@ leave open are pinned once in `ops.py`.
 | Transcendentals | exp / log / rsqrt through `ex2` / `lg2` / `rsqrt.approx` (a few ulp); erf, sin, cos, tanh as polynomials at about 2 ulp, because `tanh.approx` is 2^-11 and `sin.approx` has no range reduction; pow as `ex2(y * lg2(abs x))` with C's sign and NaN rules | `ops.py` |
 | bool | a `.pred` register: comparisons produce it (`setp`), `where` selects on it (`selp`), arithmetic converts it to 1 / 0 and anything nonzero (NaN included) back to true, as C does; in a buffer it is one byte of 0 / 1, as C stores it | `builder.cvt`, `types.storable`, `ops.py` |
 | Coordinates | `//` in a flattened tile index (every pointwise tile of rank >= 2) lowers to `div.s32`: operands are non-negative | `expr.arith` |
+| Beyond the contract | `CastExpr`, `FuncCallExpr` and `Builtin` are starred in TASK.md (in no open or hidden problem) but lowered anyway, a line each: a cast is `cvt`, a call is the elementwise recipe at the first float argument's type (else the first argument's), a builtin is its special register | `expr.value` |
 | Indexing | one coordinate per axis, row-major; an empty index is element 0 (`sum_1[]`); any other count is `InvalidKernel` rather than a guessed flattening | `expr.address` |
 | Type mixes | `cvt` between raw bits and numbers, `setp` on predicates or ordered on bits: `Unsupported` before ptxas sees them | `builder.cvt`, `builder.setp` |
 

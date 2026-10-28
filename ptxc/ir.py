@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -69,33 +70,35 @@ def row_major(shape: Sequence[int]) -> tuple[int, ...]:
     return tuple(math.prod(shape[i + 1 :]) for i in range(len(shape)))
 
 
+def identifier(name: str) -> str:
+    """A name PTX takes as is; anything else would fail in ptxas, far from its cause."""
+    if not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", name):
+        raise InvalidKernel(f"{name!r} is not a PTX identifier")
+    return name
+
+
 @dataclass(frozen=True)
 class Buffer:
     name: str
     shape: tuple[int, ...]
     ty: Ty
-    is_output: bool
 
     @property
     def param_name(self) -> str:
         return f"param_{self.name}"  # a buffer named `add` would otherwise read as an opcode
 
-    @property
-    def strides(self) -> tuple[int, ...]:
-        return row_major(self.shape)
-
 
 @dataclass(frozen=True)
 class Launch:
-    grid: tuple[int, int, int]
-    block: tuple[int, int, int]
+    """One-dimensional by construction: `load` refuses a grid or block with a second dimension."""
+
+    grid: int
+    block: int
     smem_bytes: int  # dynamic shared memory requested at launch; 0 means every Smem is static
 
     @property
     def threads(self) -> int:
-        if self.grid[1:] != (1, 1) or self.block[1:] != (1, 1):
-            raise Unsupported("multi-dimensional launch")
-        return self.grid[0] * self.block[0]
+        return self.grid * self.block
 
 
 @dataclass(frozen=True)
@@ -106,36 +109,32 @@ class Kernel:
     launch: Launch
     target: str = "sm_89"
 
-    def buffer(self, name: str) -> Buffer:
-        for buf in self.params:
-            if buf.name == name:
-                return buf
-        raise InvalidKernel(f"buffer {name!r} is not a kernel parameter")
-
     @classmethod
     def load(cls, ir_path: Path) -> Kernel:
-        """The IR through `Graph.from_dict`, meta.json beside it, one KernelOp per file."""
+        """The IR through `Graph.from_dict`, meta.json beside it, one KernelOp per file. Whatever
+        the two files get wrong (missing, malformed, a key absent) is one InvalidKernel line."""
         from emmy.compiler.graph import Graph  # the one runtime import of emmy
 
-        graph = Graph.from_dict(json.loads(ir_path.read_text()))
-        kernels = [node.op for node in graph.nodes.values() if kind(node.op) == "KernelOp"]
-        if len(kernels) != 1:
-            raise Unsupported(f"{len(kernels)} KernelOps in one file")
-        (op,) = kernels
-        if op.serial:
-            raise Unsupported("serial axes")
-
-        meta = json.loads(ir_path.with_name("meta.json").read_text())
-        spec = next((k for k in meta["kernels"] if k["entry"] == op.name), None)
-        if spec is None:
-            raise InvalidKernel(f"meta.json has no kernel with entry {op.name!r}")
-        args = {a["name"]: a for a in spec["args"]}
-        return cls(
-            entry=op.name,
-            body=op.body,
-            params=tuple(
-                Buffer(n, tuple(args[n]["shape"]), storable(ty_of(args[n]["dtype"])), bool(args[n].get("output")))
-                for n in spec["arg_order"]
-            ),
-            launch=Launch(tuple(spec["grid"]), tuple(spec["block"]), spec.get("smem_bytes", 0)),
-        )
+        try:
+            graph = Graph.from_dict(json.loads(ir_path.read_text()))
+            meta = json.loads(ir_path.with_name("meta.json").read_text())
+            kernels = [node.op for node in graph.nodes.values() if kind(node.op) == "KernelOp"]
+            if len(kernels) != 1:
+                raise Unsupported(f"{len(kernels)} KernelOps in one file")
+            (op,) = kernels
+            if op.serial:
+                raise Unsupported("serial axes")
+            spec = next((k for k in meta["kernels"] if k["entry"] == op.name), None)
+            if spec is None:
+                raise InvalidKernel(f"meta.json has no kernel with entry {op.name!r}")
+            args = {a["name"]: a for a in spec["args"]}
+            params = tuple(
+                Buffer(identifier(n), tuple(args[n]["shape"]), storable(ty_of(args[n]["dtype"]))) for n in spec["arg_order"]
+            )
+            (grid, *rest), (block, *rest_b) = spec["grid"], spec["block"]
+            if any(d != 1 for d in rest + rest_b):
+                raise Unsupported("multi-dimensional launch")
+            launch = Launch(grid, block, spec.get("smem_bytes", 0))
+        except (OSError, ValueError, KeyError, TypeError) as err:
+            raise InvalidKernel(f"{ir_path.name}: {type(err).__name__}: {err}") from err
+        return cls(identifier(op.name), op.body, params, launch)

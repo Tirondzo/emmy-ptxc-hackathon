@@ -39,6 +39,7 @@ class Lowering:
     kernel: Kernel
     syms: Symbols = field(default_factory=Symbols)
     smem_used: int = 0  # bytes carved from the pool so far, when shared memory is pooled
+    tid: Reg = field(init=False)  # %tid.x, read once by the prologue
 
     def __enter__(self) -> Lowering:
         self._token = _current.set(self)
@@ -58,7 +59,7 @@ def prologue() -> None:
         param = op("ld.param", U64, Addr(Sym(buf.param_name)))
         base = op("cvta.to.global", U64, param)
         bind(buf.name, Array(buf.name, base, buf.ty, buf.shape, "global"))
-    tid = op("mov", U32, Sym("%tid.x"))
+    tid = lowering().tid = op("mov", U32, Sym("%tid.x"))
     lane = op("and", B32, tid, B32(31))
     warp = op("shr", U32, tid, U32(5))
     bind("lane", Bound(cvt(lane, INDEX)))

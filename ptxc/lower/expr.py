@@ -15,7 +15,7 @@ from .. import ir, ops
 from ..errors import InvalidKernel, Unsupported
 from ..ir import Node
 from ..ptx import Addr, Imm, Reg, Sym, Value, cvt, emit, op, reg, setp, truth, unify
-from ..types import F32, INDEX, PRED, S64, U32, U64
+from ..types import F32, INDEX, PRED, S64, U32, U64, ty_of
 from .lowerer import read
 from .symbols import Array
 
@@ -32,7 +32,7 @@ def value(e: Node | int | float) -> Value:
         case "Var":
             return read(e.name)
         case "Literal":
-            return Imm(e.value, ir.ty(e.dtype) or value(e.value).ty)
+            return Imm(e.value, ty_of(e.dtype))
         case "BinaryExpr":
             return binary(e)
         case "TernaryExpr":
@@ -73,6 +73,9 @@ def arith(operator: str, a: Value, b: Value) -> Value:
 
 
 def fold(operator: str, x: int | float, y: int | float) -> int | float:
+    """Both operands already of one type (`unify`), so an int result means an int operation."""
+    if operator in ("/", "//", "%") and y == 0:
+        raise InvalidKernel("division by a constant zero")
     match operator:
         case "+":
             return x + y
@@ -81,7 +84,7 @@ def fold(operator: str, x: int | float, y: int | float) -> int | float:
         case "*":
             return x * y
         case "/" | "//":  # C division, which is what `//` renders to in emmy too: toward zero, like div.s32
-            return x / y if isinstance(x, float) or isinstance(y, float) else math.trunc(x / y)
+            return x / y if isinstance(x, float) else math.trunc(x / y)
         case _:
             return x - y * math.trunc(x / y)  # C remainder
 

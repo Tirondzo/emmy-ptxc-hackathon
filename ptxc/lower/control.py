@@ -25,8 +25,8 @@ def tile(s: Node) -> None:
     launch = lowering().kernel.launch
     if s.aux_threads:
         raise Unsupported("aux_threads")
-    if s.block_threads not in (None, launch.block[0]):
-        raise InvalidKernel(f"Tile wants {s.block_threads} threads per block, meta.json launches {launch.block[0]}")
+    if s.block_threads not in (None, launch.block):
+        raise InvalidKernel(f"Tile wants {s.block_threads} threads per block, meta.json launches {launch.block}")
     cells = math.prod(ir.extent(a) for a in s.axes)
     if launch.threads < cells:
         raise InvalidKernel(f"{cells} cells for {launch.threads} launched threads")
@@ -40,8 +40,7 @@ def tile(s: Node) -> None:
 def global_id() -> Reg:
     ctaid = op("mov", U32, Sym("%ctaid.x"))
     ntid = op("mov", U32, Sym("%ntid.x"))
-    tid = op("mov", U32, Sym("%tid.x"))
-    return cvt(op("mad.lo", U32, ctaid, ntid, tid), INDEX)
+    return cvt(op("mad.lo", U32, ctaid, ntid, lowering().tid), INDEX)
 
 
 def decode_axes(gid: Reg, axes: Body) -> None:

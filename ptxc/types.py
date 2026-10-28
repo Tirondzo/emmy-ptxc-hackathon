@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import struct
 from dataclasses import dataclass
 from enum import Enum
@@ -52,14 +53,25 @@ class Imm:  # Const
     value: int | float
     ty: Ty
 
+    def __post_init__(self) -> None:  # the value is of the type: folding can then go by the Python type
+        object.__setattr__(self, "value", float(self.value) if self.ty.is_float else int(self.value))
+
     def __str__(self) -> str:
         if self.ty.kind is Kind.BITS:
-            return hex(int(self.value))
+            return hex(self.value)
         if not self.ty.is_float:
-            return str(int(self.value))
+            return str(self.value)
         if self.ty.bits == 32:  # floats are written as exact bit patterns, never decimal
-            return "0f%08X" % struct.unpack(">I", struct.pack(">f", self.value))[0]
+            return "0f%08X" % f32_bits(self.value)
         return "0d%016X" % struct.unpack(">Q", struct.pack(">d", self.value))[0]
+
+
+def f32_bits(value: float) -> int:
+    """The nearest f32; a magnitude beyond f32 rounds to inf, as every f32 operation does."""
+    try:
+        return struct.unpack(">I", struct.pack(">f", value))[0]
+    except OverflowError:
+        return f32_bits(math.copysign(math.inf, value))
 
 
 PRED = Ty(Kind.PRED, 1)
@@ -70,7 +82,6 @@ S64 = Ty(Kind.SIGNED, 64)
 U32 = Ty(Kind.UNSIGNED, 32)
 U64 = Ty(Kind.UNSIGNED, 64)
 B32 = Ty(Kind.BITS, 32)
-B64 = Ty(Kind.BITS, 64)
 INDEX = S32
 BOOL = Ty(Kind.UNSIGNED, 8)  # a C bool in memory: one byte, 0 or 1; in registers a bool is PRED
 

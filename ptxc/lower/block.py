@@ -43,15 +43,14 @@ def smem(s: Node) -> None:
     shared = builder().module.shared
     cur = lowering()
     if pool := cur.kernel.launch.smem_bytes:
-        if not shared:
-            shared.append(Shared(POOL, 0, 16, extern=True))
+        shared[:1] = [Shared(POOL, 0, max(align, shared[0].align if shared else 16), extern=True)]
         offset = -(-cur.smem_used // align) * align
         cur.smem_used = offset + nbytes
         if cur.smem_used > pool:
             raise InvalidKernel(f"shared arrays need {cur.smem_used} bytes, meta.json launches {pool}")
         base = Sym(POOL)
     else:
-        shared.append(Shared(s.name, nbytes, align))
+        shared.append(Shared(ir.identifier(s.name), nbytes, align))
         offset, base = 0, Sym(s.name)
     bind(s.name, Array(s.name, op("mov", U32, base), ty, tuple(s.extents), "shared", offset))
 
@@ -99,7 +98,8 @@ def tree_halve(s: Node) -> None:
 
 
 def halving(n: int) -> Iterator[int]:
-    """Strides of a butterfly or tree over `n` lanes: the powers of two below `n`, descending."""
+    """Strides of a butterfly or tree over `n` lanes, the powers of two below `n`, descending:
+    halving(32) -> 16, 8, 4, 2, 1 and halving(6) -> 4, 2, 1."""
     stride = 1 << max(n - 1, 0).bit_length()
     while stride > 1:
         stride //= 2

@@ -96,7 +96,7 @@ def cvt(src: Value, to: Ty) -> Value:
     if isinstance(src, Imm):
         if to.kind is Kind.PRED or to.bits == 8:
             return to(int(src.value != 0))
-        return to(float(src.value) if to.is_float else int(src.value))
+        return to(src.value)
     if to.bits == 8:  # a bool in memory: C's conversion to bool, then the byte
         return Reg(op("selp", U32, U32(1), U32(0), materialize(cvt(src, PRED))).name, to)
     if src.ty.bits == 8:  # zero-extended by the load: widen for free, then convert

@@ -1,6 +1,5 @@
 """Printer: PtxModule -> text. Layout only; every decision was made upstream."""
 
-from ..errors import InvalidKernel
 from .code import PREFIX, Item, Label, PtxModule
 
 
@@ -15,10 +14,7 @@ def render(m: PtxModule) -> str:
         "\tret;",
         "}",
     ]
-    text = "\n".join(lines) + "\n"
-    if not text.isascii():  # ptxas rejects non-ASCII anywhere, comments included
-        raise InvalidKernel("PTX output contains non-ASCII text")
-    return text
+    return "\n".join(lines) + "\n"
 
 
 def header(m: PtxModule) -> list[str]:

@@ -6,7 +6,6 @@ from .. import ir, ops
 from ..errors import InvalidKernel, Unsupported
 from ..ir import Node
 from ..ptx import Addr, Reg, Vec, cvt, dotted, emit, materialize, reg
-from ..types import Ty
 from . import expr
 from .lowerer import array, assign, declare, lowering, read, rule
 from .symbols import Array, Variable
@@ -47,7 +46,7 @@ def load(s: Node) -> None:
     """Values arrive at the buffer's element type and are converted to `dtype` if it says otherwise."""
     arr = array(s.input)
     ty = ir.ty(s.dtype) or arr.ty
-    regs = load_values(arr, expr.address(arr, s.index), arr.ty, len(s.names))
+    regs = load_values(arr, expr.address(arr, s.index), len(s.names))
     for name, r in zip(s.names, regs, strict=True):
         assign(name, cvt(r, ty))
 
@@ -65,10 +64,10 @@ def write(s: Node) -> None:
         store_values(arr, addr, regs)
 
 
-def load_values(arr: Array, addr: Addr, ty: Ty, count: int) -> list[Reg]:
-    regs = [reg(ty) for _ in range(count)]
+def load_values(arr: Array, addr: Addr, count: int) -> list[Reg]:
+    regs = [reg(arr.ty) for _ in range(count)]
     for vec, at, dst in accesses(addr, regs):
-        emit(dotted("ld", arr.space, vec, ty.ptx), dst, at)
+        emit(dotted("ld", arr.space, vec, arr.ty.ptx), dst, at)
     return regs
 
 

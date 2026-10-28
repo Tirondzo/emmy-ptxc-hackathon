@@ -17,7 +17,7 @@ from collections.abc import Callable, Sequence
 
 from .errors import Unsupported
 from .ptx import Reg, Value, bitcast, cvt, emit, op, reg, setp, truth, unify
-from .types import B32, PRED, S32, U32, Kind, Ty
+from .types import B32, F32, PRED, S32, U32, Kind, Ty
 
 type Recipe = Callable[..., Value]  # (ty: Ty, *args: Value) -> Value
 
@@ -47,7 +47,7 @@ def apply(name: str, ty: Ty, args: Sequence[Value]) -> Value:
         raise Unsupported(f"elementwise op {name!r}")
     if name not in RAW:
         args = [cvt(a, ty) for a in args]
-    return cvt(OPS[name](ty, *args), ty)
+    return cvt(OPS[name](ty, *args), ty)  # a raw recipe returns what it computed: a predicate, raw bits
 
 
 def floating(name: str, ty: Ty, f64: bool = True) -> str:
@@ -55,6 +55,12 @@ def floating(name: str, ty: Ty, f64: bool = True) -> str:
     if ty.is_float and (ty.bits == 32 or f64):
         return name
     raise Unsupported(f"{name} on {ty.ptx}")
+
+
+def require_f32(what: str, ty: Ty) -> None:
+    """The polynomial recipes and the `.approx` instructions they lean on exist for f32 only."""
+    if ty != F32:
+        raise Unsupported(f"{what} on {ty.ptx}")
 
 
 def fma(ty: Ty, a: Value, b: Value, c: Value) -> Reg:
@@ -244,7 +250,7 @@ def power(ty: Ty, x: Value, y: Value) -> Value:
     """powf as C defines it: 2^(y log2|x|) with the product kept to about 2^-30, so the result is
     a few ulp for any exponent; then the special values the bit games do not see (0, inf, NaN),
     the sign for an odd integer y, NaN for a negative base with a fractional y, 1 for y = 0."""
-    floating("pow", ty, f64=False)
+    require_f32("pow", ty)
     ax = op("abs", ty, x)
     hi, lo = log2_split(ty, ax)
     p = op("mul.rn", ty, y, hi)
@@ -270,7 +276,7 @@ TANH = (-0.006287672556936741, 0.021081697195768356, -0.05385489761829376, 0.133
 @recipe("tanh")
 def tanh(ty: Ty, x: Value) -> Value:
     """|x| < 0.55: x + x^3 P(x^2), a minimax fit; above: 1 - 2 / (exp(2|x|) + 1). About 2 ulp."""
-    floating("tanh", ty, f64=False)
+    require_f32("tanh", ty)
     t = op("abs", ty, x)
     e = exp(ty, op("mul.rn", ty, t, ty(2)))
     tail = fma(ty, ty(-2), op("rcp.rn", ty, op("add.rn", ty, e, ty(1))), ty(1))
@@ -286,7 +292,7 @@ ERF_CORE = (-5.96761703e-4, 4.99119423e-3, -2.67681349e-2, 1.12819925e-1, -3.761
 @recipe("erf")
 def erf(ty: Ty, x: Value) -> Value:
     """Faithfully rounded erff (N. Juffa): odd polynomial in x below 0.921875, 1 - exp(p(|x|)) above."""
-    floating("erf", ty, f64=False)
+    require_f32("erf", ty)
     t = op("abs", ty, x)
     s = op("mul.rn", ty, x, x)
     r = fma(ty, ty(-1.72853470e-5), t, ty(3.83197126e-4))
@@ -318,7 +324,7 @@ def reduce_trig(ty: Ty, x: Value) -> tuple[Value, Reg]:
 
 def trig(ty: Ty, x: Value, cosine: bool) -> Value:
     """sin or cos from the reduced argument: the quadrant picks the polynomial and the sign."""
-    floating("cos" if cosine else "sin", ty, f64=False)
+    require_f32("cos" if cosine else "sin", ty)
     r, q = reduce_trig(ty, x)
     s = op("mul.rn", ty, r, r)
     sin_r = fma(ty, op("mul.rn", ty, horner(ty, s, SIN), s), r, r)
