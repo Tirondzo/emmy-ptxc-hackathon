@@ -18,6 +18,7 @@ tests/
   test_warp.py           kernel semantics on a simulated warp and on the GPU: shuffles of every length, selects, NaN
   test_unroll.py         the unroll policy and options, the shape each mode emits, every emission path on the GPU
   test_precision.py      the precision policy over rtol / atol, the spelling each mode emits, every mode on the GPU
+  test_f64.py            the f64 transcendentals (exp, log, sin, cos, tanh, erf, pow, sigmoid) against numpy in ulp, GPU only
   bench.py               ptxc under several option sets against emmy's reference: min over repeats, registers, spills
   expressions_extra.py   torch expressions for our own problems, one list per category
   hacks.py               the problems we propose for the hidden set, and what each one catches

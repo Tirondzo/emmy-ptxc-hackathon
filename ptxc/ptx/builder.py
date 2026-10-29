@@ -161,8 +161,9 @@ def truth(v: Value) -> Reg:
 
 
 def unify(a: Value, b: Value) -> tuple[Value, Value]:
-    """A common type for a binary op: float wins, then the wider; f32 for halves, whose arithmetic is f32's."""
-    ty = max(a.ty, b.ty, key=lambda t: (t.is_float, t.bits))
+    """A common type for a binary op, C's usual arithmetic conversions: float wins, then the wider, and
+    at one width unsigned over signed, whichever side it is on; f32 for halves, whose arithmetic is f32's."""
+    ty = max(a.ty, b.ty, key=lambda t: (t.is_float, t.bits, t.kind is Kind.UNSIGNED))
     if ty == F16:
         ty = F32
     return cvt(a, ty), cvt(b, ty)

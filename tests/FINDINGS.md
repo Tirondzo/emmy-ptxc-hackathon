@@ -299,3 +299,26 @@ python tests/gpu_runner.py --all          # the same, as a report with registers
 python tests/gpu_runner.py p85_pow5       # one problem
 python tests/bench.py --all               # the performance table above
 ```
+
+## f64 transcendentals (2026-10-29)
+
+PTX has no f64 `ex2` / `lg2` / `sin` / `cos` / `tanh`, so `ops.py` lowers exp, log, sin, cos, tanh,
+erf, pow and sigmoid in f64 as reductions and `fma.rn.f64` series (Taylor terms until the next is
+below 2^-54 at the reduced radius; Cody's rational fits for erf). Measured on the RTX 5080 against
+numpy float64 (`tests/test_f64.py`), max over 1024 points per row:
+
+| op | argument range | max ulp |
+|---|---|---|
+| exp | randn, and [-700, 700] | 1 |
+| log | [0.5, 4.4], and [1e-303, 1e303] | 2 |
+| sin, cos | [-12, 9] | 1 |
+| sin | [-7e4, 7e4] | 2 |
+| tanh | [-12, 9], and [-4e-3, 3e-3] | 2 |
+| erf | [-8, 6] | 2 |
+| erf | [-0.4, 0.3] | 3 |
+| sigmoid | [-20, 15] | 2 |
+| pow | x in [0.1, 4], y in [-3, 3]; x^2, x^3 | 2 |
+
+pow's error grows with |y ln x| (the log's own rounding scaled by y, as in the f32 recipe): about
+|y ln x| / 2 ulp, 50 ulp at 1.5^300. The special values (NaN through, the infinities and zeros, the
+ends of exp's range, subnormal arguments, C's pow rules) are checked in the same file.

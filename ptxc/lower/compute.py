@@ -1,4 +1,4 @@
-"""Scalar compute: Assign, Let, Init, Accum, Load, Write."""
+"""Scalar compute: Assign, Let, Init, Select, Accum, Load, Write."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from .. import ir, ops
 from ..errors import InvalidKernel, Unsupported
 from ..ir import Node
-from ..ptx import Addr, Reg, Value, Vec, cvt, dotted, emit, materialize, reg
+from ..ptx import Addr, Reg, Value, Vec, cvt, dotted, emit, materialize, reg, select, unify
 from ..types import F16, PRED, Ty
 from . import expr
 from .lowerer import array, assign, declare, lowering, read, rule
@@ -37,6 +37,20 @@ def let(s: Node) -> None:
 def init(s: Node) -> None:
     v = expr.value(s.identity)
     declare(s.name, cvt(v, ir.ty(s.dtype) or v.ty))
+
+
+@rule("Select")
+def select_(s: Node) -> None:
+    """`name` = the value of the first branch whose predicate holds, the last branch being the default
+    whose predicate is not read: emmy's chain of ternaries, which it emits for the masked tail of a
+    replicated reduction (`v when (k < K)`, else the identity an `Init` declared). The values are unified
+    as a ternary's are; emmy declares the result `float`, and so is every Select it emits."""
+    *branches, default = s.branches
+    result = read(default.value)
+    for b in reversed(branches):
+        v, result = unify(read(b.value), result)
+        result = select(v.ty, v, result, expr.predicate(b.select))
+    assign(s.name, result)
 
 
 @rule("Accum")

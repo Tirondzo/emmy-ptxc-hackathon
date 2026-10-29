@@ -181,6 +181,13 @@ class TestInput:
         with pytest.raises(Unsupported, match="bf16"):
             Kernel.load(ir)
 
+    def test_scalar_parameter_is_unsupported_by_name(self, ir: Path) -> None:
+        """A `"scalar": true` argument (the runner's by-value form, which only serial axes use) is refused with
+        its name, not reported as a malformed meta.json."""
+        self.meta(ir, lambda k: k["args"][0].update(scalar=True, value=1.0))
+        with pytest.raises(Unsupported, match=r"scalar parameters \['x"):
+            Kernel.load(ir)
+
     def test_reads_utf8(self, ir: Path) -> None:
         self.meta(ir, lambda k: k.update(code="x \u2218 \u03c3(y)"))
         assert Kernel.load(ir).entry == "k_add_pointwise"

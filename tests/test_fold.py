@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 from gpu_runner import Gpu, assemble, launch
 
+from ptxc.errors import InvalidKernel
 from ptxc.lower.expr import arith, fold
 from ptxc.types import INDEX, Imm
 
@@ -71,6 +72,17 @@ def test_arith_folds_immediates() -> None:
     assert arith("%", INDEX(-7), INDEX(2)) == Imm(1, INDEX)
     assert arith("//", INDEX(7), INDEX(-2)) == Imm(-4, INDEX)
     assert arith("/", INDEX(-7), INDEX(2)) == Imm(-3, INDEX)
+
+
+def test_fold_bitwise_is_pythons() -> None:
+    """`& | ^ << >>` fold as Python computes them on two's-complement integers: `>>` keeps the sign, as `shr.s32` does."""
+    assert (fold("&", 12, 10), fold("|", 12, 10), fold("^", 12, 10)) == (8, 14, 6)
+    assert fold("<<", 3, 2) == 12 and fold(">>", -8, 1) == -4
+    assert arith("&", INDEX(12), INDEX(10)) == Imm(8, INDEX)
+    with pytest.raises(InvalidKernel, match="negative"):
+        fold("<<", 1, -1)
+    with pytest.raises(InvalidKernel, match="float"):
+        fold("&", 1.0, 2.0)
 
 
 def test_fold_is_exact_past_2_53() -> None:

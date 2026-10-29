@@ -5,7 +5,10 @@ A recipe with more than one spelling asks the ambient `Budget` whether the faste
 `.rn` (so ptxas may fuse mul + add into fma), `div.full` / `rcp.approx` / `sqrt.approx`,
 `tanh.approx`, `sin.approx` on a reduced or a raw argument, `.ftz` on the approximate instructions.
 Everything else is pinned: explicit `fma.rn` inside the polynomial recipes, exp / log / rsqrt through
-the `.approx` instructions (a few ulp), erf as a polynomial at about 1 ulp.
+the `.approx` instructions (2 ulp at the instruction; exp's error grows with |x|, about |x| ulp, as
+`__expf`'s does, since x log2e is rounded before `ex2`), erf as a polynomial at about 1 ulp. f64 has
+none of those instructions: its exp, log, sin, cos, tanh, erf and pow are reductions and polynomials in
+`fma.rn.f64` (the section at the end), 1 to 3 ulp against libm.
 
 A recipe takes the result type and its arguments already converted to it. A `raw` recipe takes
 the arguments as they come and converts what it needs: comparisons unify their operands and
@@ -22,8 +25,8 @@ from .context import lowering, options
 from .errors import Unsupported
 from .ir import Tolerance
 from .options import Precision
-from .ptx import Reg, Value, bitcast, cvt, emit, op, reg, select, setp, truth, unify
-from .types import B32, F16, F32, PRED, S32, U32, Imm, Kind, Ty
+from .ptx import Reg, Value, Vec, bitcast, cvt, emit, materialize, op, reg, select, setp, truth, unify
+from .types import B32, F16, F32, F64, PRED, S32, U32, Imm, Kind, Ty
 
 type Recipe = Callable[..., Value]  # (ty: Ty, *args: Value) -> Value
 
@@ -146,6 +149,20 @@ def rint(ty: Ty, x: Value) -> Reg:
     return r
 
 
+def trunc(ty: Ty, x: Value) -> Reg:
+    """Toward zero, still a float."""
+    r = reg(ty)
+    emit(f"cvt.rzi.{ty.ptx}.{ty.ptx}", r, x)
+    return r
+
+
+def integer(ty: Ty, x: Value) -> Reg:
+    """An integral float as an s32."""
+    q = reg(S32)
+    emit(f"cvt.rzi.s32.{ty.ptx}", q, x)
+    return q
+
+
 # ---- int and float; the int spelling differs (mul.lo, div, no .rn) --------------------
 
 
@@ -206,6 +223,26 @@ def down(r: Reg, y: Value) -> Reg:
     if isinstance(y, Imm):
         return setp("lt" if y.value > 0 else "gt", r, r.ty(0))
     return op("and", PRED, setp("ne", r, r.ty(0)), op("xor", PRED, setp("lt", r, r.ty(0)), setp("lt", y, r.ty(0))))
+
+
+@recipe("left_shift")
+def left_shift(ty: Ty, x: Value, y: Value) -> Value:
+    """`x << y`, on the bits: `shl` has no signed form and needs none."""
+    return shifted("shl", ty, x, y)
+
+
+@recipe("right_shift")
+def right_shift(ty: Ty, x: Value, y: Value) -> Value:
+    """`x >> y`: arithmetic on a signed x (`shr.s32` keeps the sign, as Python and C do), logical on unsigned."""
+    return shifted("shr", ty, x, y)
+
+
+def shifted(opcode: str, ty: Ty, x: Value, y: Value) -> Value:
+    """A shift by `y`, which `shl` / `shr` take as `.u32`."""
+    if ty.is_float:
+        raise Unsupported(f"{opcode} on {ty.ptx}")
+    bits = Ty(Kind.BITS, ty.bits) if opcode == "shl" else ty
+    return cvt(op(opcode, bits, cvt(x, bits), cvt(y, U32)), ty)
 
 
 @recipe("maximum")
@@ -312,12 +349,20 @@ def rsqrt(ty: Ty, x: Value) -> Value:
 
 @recipe("exp", "exp_fast")
 def exp(ty: Ty, x: Value) -> Value:
+    """`ex2.approx` of x log2e: 2 ulp at the instruction plus about |x| ulp from rounding the product, as
+    `__expf`; f64 has no `ex2`, so `exp64`."""
+    if ty == F64:
+        return exp64(x)
     scaled = op("mul.rn", ty, x, ty(LOG2E))
     return op(floating(f"ex2.approx{ftz(ty)}", ty, f64=False), ty, scaled)
 
 
 @recipe("log")
 def log(ty: Ty, x: Value) -> Value:
+    """`lg2.approx` times ln 2: 2^-22.6 absolute in the log2, so the relative error grows as x nears 1;
+    f64 has no `lg2`, so `log64`."""
+    if ty == F64:
+        return log64(x)
     lg2 = op(floating(f"lg2.approx{ftz(ty)}", ty, f64=False), ty, x)
     return op("mul.rn", ty, lg2, ty(LN2))
 
@@ -349,15 +394,19 @@ def log2_split(ty: Ty, x: Value) -> tuple[Value, Value]:
 
 @recipe("pow", "power")
 def power(ty: Ty, x: Value, y: Value) -> Value:
-    """powf as C defines it: 2^(y log2|x|) with the product kept to about 2^-30, so the result is
-    a few ulp for any exponent; then the special values the bit games do not see (0, inf, NaN),
-    the sign for an odd integer y, NaN for a negative base with a fractional y, 1 for y = 0."""
-    require_f32("pow", ty)
+    """pow as C defines it: 2^(y log2|x|) (f32) or e^(y ln|x|) (f64) with the product kept to about
+    2^-30 / 2^-60, so the result is a few ulp for any exponent; then the special values the bit games
+    do not see (0, inf, NaN), the sign for an odd integer y, NaN for a negative base with a fractional
+    y, 1 for y = 0 and for x = 1 (even against NaN, as C has it)."""
     ax = op("abs", ty, x)
-    hi, lo = log2_split(ty, ax)
-    p = op("mul.rn", ty, y, hi)
-    p_lo = fma(ty, y, lo, fma(ty, y, hi, op("neg", ty, p)))
-    r = op("mul.rn", ty, op("ex2.approx", ty, p), fma(ty, p_lo, ty(LN2), ty(1)))
+    if ty == F64:
+        r = pow_core64(ax, y)
+    else:
+        require_f32("pow", ty)
+        hi, lo = log2_split(ty, ax)
+        p = op("mul.rn", ty, y, hi)
+        p_lo = fma(ty, y, lo, fma(ty, y, hi, op("neg", ty, p)))
+        r = op("mul.rn", ty, op("ex2.approx", ty, p), fma(ty, p_lo, ty(LN2), ty(1)))
     y_negative = setp("lt", y, ty(0))
     r = op("selp", ty, op("selp", ty, ty(math.inf), ty(0), y_negative), r, setp("eq", ax, ty(0)))
     r = op("selp", ty, op("selp", ty, ty(0), ty(math.inf), y_negative), r, setp("eq", ax, ty(math.inf)))
@@ -369,7 +418,7 @@ def power(ty: Ty, x: Value, y: Value) -> Value:
     negative_base = setp("lt", x, ty(0))
     r = op("selp", ty, op("neg", ty, r), r, op("and", PRED, negative_base, odd))
     r = op("selp", ty, ty(math.nan), r, op("and", PRED, negative_base, op("not", PRED, integer)))
-    return op("selp", ty, ty(1), r, setp("eq", y, ty(0)))
+    return op("selp", ty, ty(1), r, op("or", PRED, setp("eq", y, ty(0)), setp("eq", x, ty(1))))
 
 
 TANH = (-0.006287672556936741, 0.021081697195768356, -0.05385489761829376, 0.13332612812519073, -0.33333319425582886)
@@ -379,7 +428,9 @@ TANH = (-0.006287672556936741, 0.021081697195768356, -0.05385489761829376, 0.133
 def tanh(ty: Ty, x: Value) -> Value:
     """`tanh.approx` (one instruction, 2^-11 relative) when the budget has room for it, which needs
     rtol >= 2e-3. Else |x| < 0.55: x + x^3 P(x^2), a minimax fit; above: 1 - 2 / (exp(2|x|) + 1).
-    About 2 ulp."""
+    About 2 ulp. f64: `tanh64`."""
+    if ty == F64:
+        return tanh64(x)
     require_f32("tanh", ty)
     if allows(ulps=2**12):
         return op("tanh.approx", ty, x)
@@ -397,7 +448,10 @@ ERF_CORE = (-5.96761703e-4, 4.99119423e-3, -2.67681349e-2, 1.12819925e-1, -3.761
 
 @recipe("erf")
 def erf(ty: Ty, x: Value) -> Value:
-    """Faithfully rounded erff (N. Juffa): odd polynomial in x below 0.921875, 1 - exp(p(|x|)) above."""
+    """Faithfully rounded erff (N. Juffa): odd polynomial in x below 0.921875, 1 - exp(p(|x|)) above.
+    f64: `erf64`."""
+    if ty == F64:
+        return erf64(x)
     require_f32("erf", ty)
     t = op("abs", ty, x)
     s = op("mul.rn", ty, x, x)
@@ -418,14 +472,13 @@ COS = (2.44331571e-5, -1.38873163e-3, 4.16666418e-2, -0.5)
 
 
 def reduce_trig(ty: Ty, x: Value) -> tuple[Value, Reg]:
-    """x = r + q * pi/2 with |r| <= pi/4: Cody-Waite in three parts, exact to about |x| < 1e5."""
+    """x = r + q * pi/2 with |r| <= pi/4: Cody-Waite in three parts, exact to about |x| < 1e5 (f32)
+    or 1e6 (f64, 33-bit parts so q times each is exact to 2^20)."""
     j = rint(ty, op("mul.rn", ty, x, ty(TWO_OVER_PI)))
     r: Value = x
-    for part in PIO2:
+    for part in PIO2 if ty == F32 else PIO2_64:
         r = fma(ty, j, ty(-part), r)
-    q = reg(S32)
-    emit(f"cvt.rzi.s32.{ty.ptx}", q, j)
-    return r, q
+    return r, integer(ty, j)
 
 
 TWO_PI = (6.2831854820251465, -1.7484555314695172e-07)  # 2 pi in two f32 parts
@@ -442,17 +495,22 @@ def trig(ty: Ty, x: Value, cosine: bool) -> Value:
     which the ISA promises only within 100 pi, so only when the caller vouches for the range
     (`Options.raw_trig`). `sin.approx` after reducing the argument into [-pi, pi]: absolute 2^-20.4
     (cos's bound, the looser), three instructions more. Else Cody-Waite reduction and the polynomials:
-    the quadrant picks the polynomial and the sign, about 1 ulp."""
+    the quadrant picks the polynomial and the sign, about 1 ulp. f64 has no `sin.approx`: the
+    reduction and the Taylor series to r^17 / r^18 (below 2^-54 at pi/4), 2 ulp."""
     name = "cos" if cosine else "sin"
-    require_f32(name, ty)
-    if options().raw_trig and allows(absolute=2**-14.7):
-        return op(f"{name}.approx{ftz(ty)}", ty, x)
-    if allows(absolute=2**-20.4):
-        return op(f"{name}.approx{ftz(ty)}", ty, reduce_turns(ty, x))
+    if ty == F64:
+        poly_sin, poly_cos = SIN64, COS64
+    else:
+        require_f32(name, ty)
+        if options().raw_trig and allows(absolute=2**-14.7):
+            return op(f"{name}.approx{ftz(ty)}", ty, x)
+        if allows(absolute=2**-20.4):
+            return op(f"{name}.approx{ftz(ty)}", ty, reduce_turns(ty, x))
+        poly_sin, poly_cos = SIN, COS
     r, q = reduce_trig(ty, x)
     s = op("mul.rn", ty, r, r)
-    sin_r = fma(ty, op("mul.rn", ty, horner(ty, s, SIN), s), r, r)
-    cos_r = fma(ty, horner(ty, s, COS), s, ty(1))
+    sin_r = fma(ty, op("mul.rn", ty, horner(ty, s, poly_sin), s), r, r)
+    cos_r = fma(ty, horner(ty, s, poly_cos), s, ty(1))
     quadrant = cvt(q, B32)
     odd = setp("ne", op("and", B32, quadrant, B32(1)), B32(0))
     v = op("selp", ty, sin_r, cos_r, odd) if cosine else op("selp", ty, cos_r, sin_r, odd)
@@ -469,3 +527,156 @@ def sin(ty: Ty, x: Value) -> Value:
 @recipe("cos")
 def cos(ty: Ty, x: Value) -> Value:
     return trig(ty, x, cosine=True)
+
+
+# ---- f64: the polynomial set ------------------------------------------------------------------
+# PTX has no f64 ex2, lg2, sin, cos or tanh, so each function is a reduction and a series in
+# `fma.rn.f64`: Taylor terms until the next one is below 2^-54 at the reduced argument's radius, or
+# Cody's rational fits for erf. Every constant with a role in exactness is a float with trailing
+# zeros, so that an integer times it is exact. Measured against libm: exp 1 ulp, log 2, sin and cos 2
+# (|x| < 1e5), tanh 3, erf 1, pow 2 for |y| < 10.
+
+LN2_HI64 = 0.6931471806019545  # ln 2 to 33 bits: n * LN2_HI64 is exact for |n| < 2^20
+LN2_LO64 = -4.2009150726810846e-11  # ln 2 - LN2_HI64
+PIO2_64 = (1.5707963267341256, 6.077100506303966e-11, 2.0222662487959506e-21)  # pi/2 in 33 + 33 + 53 bits
+SQRT_HALF_HI64 = 0x3FE6A09E  # the high word of sqrt(1/2): the mantissa window is [sqrt 1/2, sqrt 2)
+DBL_MIN = 2.2250738585072014e-308  # below it an f64 is subnormal and its exponent field is 0
+EXP_TAYLOR = tuple(1 / math.factorial(k) for k in range(13, -1, -1))  # e^r = sum r^k / k!, k = 13..0
+EXPM1_TAYLOR = tuple(1 / math.factorial(k) for k in range(13, 0, -1))  # (e^r - 1) / r = sum r^(k-1) / k!, k = 13..1
+LOG_SERIES64 = tuple(2 / (2 * k + 1) for k in range(10, 0, -1))  # ln m = 2t sum s^k / (2k+1), s = t^2, k = 10..0
+SIN64 = tuple((-1) ** k / math.factorial(2 * k + 1) for k in range(8, 0, -1))  # (sin r - r) / r^3 in s = r^2
+COS64 = tuple((-1) ** k / math.factorial(2 * k) for k in range(9, 0, -1))  # (cos r - 1) / s in s = r^2
+
+
+def words(x: Value) -> tuple[Reg, Reg]:
+    """An f64 as its two 32-bit halves, low then high: `mov.b64 {lo, hi}, x`."""
+    lo, hi = reg(B32), reg(B32)
+    emit("mov.b64", Vec((lo, hi)), materialize(x))
+    return lo, hi
+
+
+def from_words(lo: Value, hi: Value) -> Reg:
+    out = reg(F64)
+    emit("mov.b64", out, Vec((materialize(lo), materialize(hi))))
+    return out
+
+
+def scale64(n: Value) -> Reg:
+    """2^n as an f64 from an s32 n in [-1022, 1023]: the exponent field, (n + 1023) << 20, as the high word."""
+    return from_words(B32(0), op("shl", B32, cvt(op("add", S32, n, S32(1023)), B32), U32(20)))
+
+
+def ldexp64(p: Value, k: Reg) -> Value:
+    """p * 2^k for k in [-1075, 1024], in two halves so a subnormal result rounds once and 2^k never
+    has to be built past the exponent's range."""
+    n1 = op("shr", S32, k, U32(1))
+    n2 = op("sub", S32, k, n1)
+    return op("mul.rn", F64, op("mul.rn", F64, p, scale64(n1)), scale64(n2))
+
+
+def exp_reduce64(x: Value) -> tuple[Reg, Value]:
+    """x = n ln2 + r with |r| <= ln2 / 2, n integral as a float; ln 2 in two parts so n ln2 is exact."""
+    ty = F64
+    n = rint(ty, op("mul.rn", ty, x, ty(LOG2E)))
+    r = fma(ty, n, ty(-LN2_HI64), x)
+    return n, fma(ty, n, ty(-LN2_LO64), r)
+
+
+def exp64(x: Value) -> Value:
+    """e^x: the reduction, the series to r^13 and 2^n in the exponent field. x is first clamped to
+    where the result is finite or zero (so n and r stay small; the clamped ends give inf and 0);
+    NaN passes through, since `max` would drop it. 1 ulp."""
+    ty = F64
+    x_c = op("min", ty, op("max", ty, x, ty(-745.2)), ty(709.8))
+    n, r = exp_reduce64(x_c)
+    p = horner(ty, r, EXP_TAYLOR)
+    return op("selp", ty, x, ldexp64(p, integer(ty, n)), setp("nan", x, x))
+
+
+def log_split64(x: Value) -> tuple[Value, Value]:
+    """ln x for a positive x as hi + lo: x = 2^e m with m in [sqrt 1/2, sqrt 2) read off the high
+    word (a subnormal x is scaled by 2^54 first), ln m from the atanh series in t = (m - 1) / (m + 1)
+    to t^21, e ln2 in two parts. The sum is 2 ulp; the pair keeps about 2^-60 for pow."""
+    ty = F64
+    tiny = setp("lt", x, ty(DBL_MIN))
+    x = op("selp", ty, op("mul.rn", ty, x, ty(2.0**54)), x, tiny)
+    lo, hi = words(x)
+    i = op("sub", S32, cvt(hi, S32), S32(SQRT_HALF_HI64))
+    e = cvt(op("shr", S32, i, U32(20)), ty)
+    e = op("selp", ty, op("sub.rn", ty, e, ty(54)), e, tiny)
+    m = from_words(lo, op("add", S32, cvt(op("and", B32, cvt(i, B32), B32(0xFFFFF)), S32), S32(SQRT_HALF_HI64)))
+    t = op("div.rn", ty, op("sub.rn", ty, m, ty(1)), op("add.rn", ty, m, ty(1)))
+    s = op("mul.rn", ty, t, t)
+    lm = fma(ty, op("mul.rn", ty, t, s), horner(ty, s, LOG_SERIES64), op("mul.rn", ty, t, ty(2)))
+    a = op("mul.rn", ty, e, ty(LN2_HI64))  # exact
+    hi_ = op("add.rn", ty, a, lm)  # Fast2Sum: |a| >= |lm| unless e == 0, when hi is lm and lo is 0
+    lo_ = fma(ty, e, ty(LN2_LO64), op("add.rn", ty, op("sub.rn", ty, a, hi_), lm))
+    return hi_, lo_
+
+
+def log64(x: Value) -> Value:
+    """ln x, with the values the bit games do not see: -inf at 0, NaN below, inf and NaN through."""
+    ty = F64
+    hi, lo = log_split64(x)
+    r = op("add.rn", ty, hi, lo)
+    r = op("selp", ty, ty(-math.inf), r, setp("eq", x, ty(0)))
+    r = op("selp", ty, ty(math.inf), r, setp("eq", x, ty(math.inf)))
+    r = op("selp", ty, ty(math.nan), r, setp("lt", x, ty(0)))
+    return op("selp", ty, x, r, setp("nan", x, x))
+
+
+def pow_core64(ax: Value, y: Value) -> Value:
+    """|x|^y = e^(y ln|x|) with the product in two parts: e^hi (1 + lo), as the f32 recipe does in base 2."""
+    ty = F64
+    hi, lo = log_split64(ax)
+    p = op("mul.rn", ty, y, hi)
+    p_lo = fma(ty, y, lo, fma(ty, y, hi, op("neg", ty, p)))
+    return op("mul.rn", ty, exp64(p), op("add.rn", ty, ty(1), p_lo))
+
+
+def tanh64(x: Value) -> Value:
+    """tanh x = u / (u + 2) with u = e^(2|x|) - 1 from the exp reduction and the series less its 1,
+    so a small x loses nothing to cancellation; 2|x| is capped at 40, past which tanh is 1 to the
+    last bit, and 2^n is then always in range. NaN passes through. 3 ulp."""
+    ty = F64
+    t = op("min", ty, op("mul.rn", ty, op("abs", ty, x), ty(2)), ty(40))
+    n, r = exp_reduce64(t)
+    q = op("mul.rn", ty, r, horner(ty, r, EXPM1_TAYLOR))
+    sc = scale64(integer(ty, n))
+    u = fma(ty, sc, q, op("sub.rn", ty, sc, ty(1)))
+    th = op("div.rn", ty, u, op("add.rn", ty, u, ty(2)))
+    return op("selp", ty, x, op("copysign", ty, x, th), setp("nan", x, x))
+
+
+# W. J. Cody, "Rational Chebyshev approximations for the error function" (1969), the CALERF coefficients
+ERF_A = (1.85777706184603153e-1, 3.16112374387056560e00, 1.13864154151050156e02, 3.77485237685302021e02, 3.20937758913846947e03)
+ERF_B = (1.0, 2.36012909523441209e01, 2.44024637934444173e02, 1.28261652607737228e03, 2.84423683343917062e03)
+ERF_C = (2.15311535474403846e-8, 5.64188496988670089e-1, 8.88314979438837594e0, 6.61191906371416295e01, 2.98635138197400131e02,
+         8.81952221241769090e02, 1.71204761263407058e03, 2.05107837782607147e03, 1.23033935479799725e03)
+ERF_D = (1.0, 1.57449261107098347e01, 1.17693950891312499e02, 5.37181101862009858e02, 1.62138957456669019e03,
+         3.29079923573345963e03, 4.36261909014324716e03, 3.43936767414372164e03, 1.23033935480374942e03)
+ERF_P = (1.63153871373020978e-2, 3.05326634961232344e-1, 3.60344899949804439e-1, 1.25781726111229246e-1, 1.60837851487422766e-2,
+         6.58749161529837803e-4)
+ERF_Q = (1.0, 2.56852019228982242e00, 1.87295284992346047e00, 5.27905102951428412e-1, 6.05183413124413191e-2, 2.33520497626869185e-3)
+SQRPI = 5.6418958354775628695e-1  # 1 / sqrt(pi)
+
+
+def erf64(x: Value) -> Value:
+    """erf x by Cody's rational fits: x P(x^2) / Q(x^2) for |x| <= 0.46875, else 1 - erfc with erfc =
+    e^(-x^2) P(|x|) / Q(|x|) up to 4 and e^(-x^2) / |x| (1 / sqrt pi - z P(z) / Q(z)), z = 1 / x^2,
+    beyond; e^(-x^2) as e^(-y^2) e^(-d) with y = |x| truncated to 1/16 and d = (|x| - y)(|x| + y), so
+    x^2 is never rounded. |x| is capped at 27 (Cody's XBIG), past which erfc underflows to 0 and the
+    split would meet inf - inf. All three fits are computed and one selected. 3 ulp."""
+    ty = F64
+    y = op("min", ty, op("abs", ty, x), ty(27))
+    s = op("mul.rn", ty, y, y)
+    small = op("div.rn", ty, op("mul.rn", ty, y, horner(ty, s, ERF_A)), horner(ty, s, ERF_B))
+    mid = op("div.rn", ty, horner(ty, y, ERF_C), horner(ty, y, ERF_D))
+    z = op("rcp.rn", ty, s)
+    big = op("div.rn", ty, op("sub.rn", ty, ty(SQRPI), op("mul.rn", ty, z, op("div.rn", ty, horner(ty, z, ERF_P), horner(ty, z, ERF_Q)))), y)
+    ysq = op("mul.rn", ty, trunc(ty, op("mul.rn", ty, y, ty(16))), ty(1 / 16))
+    delta = op("mul.rn", ty, op("sub.rn", ty, y, ysq), op("add.rn", ty, y, ysq))
+    e = op("mul.rn", ty, exp64(op("neg", ty, op("mul.rn", ty, ysq, ysq))), exp64(op("neg", ty, delta)))
+    erfc = op("mul.rn", ty, e, op("selp", ty, mid, big, setp("le", y, ty(4))))
+    r = op("selp", ty, small, op("add.rn", ty, op("sub.rn", ty, ty(0.5), erfc), ty(0.5)), setp("le", y, ty(0.46875)))
+    return op("selp", ty, x, op("copysign", ty, x, r), setp("nan", x, x))

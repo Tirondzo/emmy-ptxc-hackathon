@@ -1,7 +1,7 @@
 """Expressions -> operands.
 
 Indices, predicates and loop bounds are small trees: Var, Literal, BinaryExpr, TernaryExpr,
-and the documented but unseen CastExpr, FuncCallExpr and Builtin. Each function returns
+and the documented but unseen CastExpr, FuncCallExpr, Builtin and FlatIndex. Each function returns
 where its result lives: a register, or an immediate when every leaf is constant, so
 constants fold on the way up.
 
@@ -19,10 +19,11 @@ from ..errors import InvalidKernel, Unsupported
 from ..ir import Node
 from ..ptx import Addr, Imm, Reg, Sym, Value, cvt, emit, materialize, op, reg, select, truth, unify
 from ..types import F32, INDEX, PRED, S64, U32, U64, ty_of
-from .lowerer import lowering, options, read, target
+from .lowerer import array, lowering, options, read, target
 from .symbols import Array, Bound, Variable
 
-ARITH = {"+": "add", "-": "subtract", "*": "multiply", "/": "divide", "//": "floor_divide", "%": "remainder"}
+ARITH = {"+": "add", "-": "subtract", "*": "multiply", "/": "divide", "//": "floor_divide", "%": "remainder",
+         "&": "bitwise_and", "|": "bitwise_or", "^": "bitwise_xor", "<<": "left_shift", ">>": "right_shift"}  # emmy's `apply_binop`
 COMPARE = {"==": "equal", "!=": "not_equal", "<": "less", "<=": "less_equal", ">": "greater", ">=": "greater_equal"}
 LOGIC = {"&&": "and", "||": "or", "and": "and", "or": "or"}
 SPECIAL = {"thread_idx": "tid", "block_idx": "ctaid", "block_dim": "ntid", "grid_dim": "nctaid"}  # as emmy spells them
@@ -48,6 +49,8 @@ def value(e: Node | int | float) -> Value:
             return ops.apply(e.name, ty, args)
         case "Builtin":
             return builtin(e.name)
+        case "FlatIndex":  # the row-major element offset of a coordinate in a buffer
+            return flat(array(e.buffer), e.index)
         case k:
             raise Unsupported(f"expression {k}")
 
@@ -63,6 +66,9 @@ def builtin(name: str) -> Value:
 
 
 def predicate(e: Node) -> Reg:
+    # TODO: a condition that folds to an immediate (an unrolled axis in `(_ks + 128) < 512`) is still
+    # materialized (`mov.pred`) and then branched or selected on; ptxas folds it away. Folding it here
+    # would let `Cond` emit one side only and `ternary` / `Select` one value.
     return truth(value(e))
 
 
@@ -87,6 +93,12 @@ def fold(operator: str, x: int | float, y: int | float) -> int | float:
     """Both operands already of one type (`unify`), so an int result means an int operation."""
     if operator in ("/", "//", "%") and y == 0:
         raise InvalidKernel("division by a constant zero")
+    if operator in ("&", "|", "^", "<<", ">>"):
+        if isinstance(x, float) or isinstance(y, float):
+            raise InvalidKernel(f"{operator} on float constants")
+        if operator in ("<<", ">>") and y < 0:
+            raise InvalidKernel(f"shift by a negative constant {y}")
+        return bitwise(operator, x, y)
     match operator:
         case "+":
             return x + y
@@ -106,6 +118,21 @@ def trunc_div(x: int, y: int) -> int:
     """Toward zero; in integers, since `x / y` rounds past 2^53."""
     q = abs(x) // abs(y)
     return q if (x < 0) == (y < 0) else -q
+
+
+def bitwise(operator: str, x: int, y: int) -> int:
+    """Python's, on two's-complement integers: `>>` keeps the sign, as `shr.s32` does."""
+    match operator:
+        case "&":
+            return x & y
+        case "|":
+            return x | y
+        case "^":
+            return x ^ y
+        case "<<":
+            return x << y
+        case _:
+            return x >> y
 
 
 def ternary(e: Node) -> Value:
@@ -146,6 +173,8 @@ def affine(e: Node) -> tuple[Terms, int]:
             if not rt:
                 return scale(lt, rc), lc * rc
             return term(arith("*", realize(lt, lc), realize(rt, rc)))
+        case "FlatIndex":  # already an affine form: the coordinates against the buffer's strides
+            return coordinates(array(e.buffer), e.index)
     return term(cached(e))
 
 
@@ -163,8 +192,8 @@ def scale(terms: Terms, k: int) -> Terms:
 
 def combine(a: Terms, b: Terms) -> Terms:
     out = dict(a)
-    for n, (r, c) in b.items():
-        c += out.get(n, (r, 0))[1]
+    for n, (r, k) in b.items():
+        c = k + out.get(n, (r, 0))[1]
         if c:
             out[n] = (r, c)
         else:
@@ -223,6 +252,8 @@ def key_of(e: Node) -> Hashable | None:
             return keys("call", e.name, *e.args)
         case "Builtin":
             return ("builtin", e.name)
+        case "FlatIndex":
+            return keys("flat", e.buffer, *e.index)
         case _:
             return None
 
@@ -250,7 +281,7 @@ def coordinates(arr: Array, index: Sequence[Node]) -> tuple[Terms, int]:
         raise InvalidKernel(f"{len(index)} coordinates into {arr.name}{list(arr.shape)}")
     terms: Terms = {}
     elems = 0
-    for e, stride in zip(index, arr.strides):
+    for e, stride in zip(index, arr.strides[: len(index)], strict=True):  # every stride, or none for element 0
         t, c = affine(e)
         terms = combine(terms, scale(t, stride))
         elems += c * stride

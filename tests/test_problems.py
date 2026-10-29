@@ -10,10 +10,7 @@ from pathlib import Path
 import pytest
 from gpu_runner import Gpu, report, run_problem
 
-KNOWN_GAPS = {  # problem id -> why ptxc fails it; strict xfail, so a fix shows up as XPASS
-    "a16_relu_mm": "Select statement (documented as absent from the hidden set)",
-    "m23_mm_mm": "Select statement (documented as absent from the hidden set)",
-}
+KNOWN_GAPS: dict[str, str] = {}  # problem id -> why ptxc fails it; strict xfail, so a fix shows up as XPASS. Empty since Select landed
 
 
 def describe(res: dict) -> str:

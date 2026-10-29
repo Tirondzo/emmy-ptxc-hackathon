@@ -45,6 +45,7 @@ class Lowering:
     syms: Symbols = field(default_factory=Symbols)
     axes: dict[str, int] = field(default_factory=dict)  # Tile axis -> extent, a bound on its value (trip counts)
     smem_used: int = 0  # bytes carved from the pool so far, when shared memory is pooled
+    shared: dict[str, tuple[Sym, Array]] = field(default_factory=dict)  # Smem name -> its symbol and array: declared once, bound wherever met
     tid: Reg | None = None  # %tid.x once `tid()` has read it
     budget: Budget = field(init=False)  # what the float recipes may spend: the kernel's tolerance under `options.precision`
 
