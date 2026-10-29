@@ -2,8 +2,9 @@
 
 Numerics are pinned, not configured: `.rn` on float add / sub / mul (IEEE, and it keeps ptxas
 from contracting mul+add into fma), explicit `fma.rn` inside the polynomial recipes, exp / log /
-rsqrt through the `.approx` instructions (a few ulp), erf / sin / cos / tanh as polynomials at
-about 2 ulp (`tanh.approx` is only 2^-11 accurate and `sin.approx` has no range reduction).
+rsqrt through the `.approx` instructions (2 ulp at the instruction; exp's error grows with |x|, about
+|x| ulp, as `__expf`'s does, since x log2e is rounded before `ex2`), erf / sin / cos / tanh as
+polynomials at about 2 ulp (`tanh.approx` is only 2^-11 accurate and `sin.approx` has no range reduction).
 
 A recipe takes the result type and its arguments already converted to it. A `raw` recipe takes
 the arguments as they come and converts what it needs: comparisons unify their operands and

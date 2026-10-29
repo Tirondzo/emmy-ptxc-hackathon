@@ -151,3 +151,12 @@ class TestShuffle:
     def test_longer_than_a_warp_is_refused(self) -> None:
         with pytest.raises(InvalidKernel, match="64"):
             self.lowered(64)
+
+
+class TestConversions:
+    @pytest.mark.parametrize(("left", "right"), [("u", "s"), ("s", "u")])
+    def test_mixed_signs_compare_unsigned(self, left: str, right: str) -> None:
+        """C's usual arithmetic conversions: at one width unsigned wins, whichever side it is on."""
+        ptx = lowered(load("u", "x", dtype=D.U32), load("s", "y", dtype=D.I32), Let("c", BinaryExpr("<", Var(left), Var(right))),
+                      write("out", "c"), args=[arg("x", "i32"), arg("y", "i32"), arg("out", "bool")])
+        assert "setp.lt.u32" in ptx and "setp.lt.s32" not in ptx

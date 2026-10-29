@@ -163,7 +163,11 @@ def cp_async_copy(s: Node) -> None:
         raise Unsupported(f"swizzle {s.swizzle}")
     if s.nbytes not in (4, 8, 16):
         raise Unsupported(f"cp.async of {s.nbytes} bytes")
-    index = s.smem_index if s.lane_index is None else [ir.plus(a, b) for a, b in zip(s.smem_index, s.lane_index)]
+    index = s.smem_index
+    if s.lane_index is not None:  # the lane's own offset, one coordinate per axis of the destination
+        if len(s.lane_index) != len(s.smem_index):
+            raise InvalidKernel(f"cp.async into {s.smem}: a lane offset of {len(s.lane_index)} coordinates for {len(s.smem_index)}")
+        index = [ir.plus(a, b) for a, b in zip(s.smem_index, s.lane_index, strict=True)]
     dst = expr.address(array(s.smem), index)
     src = expr.address(array(s.src), s.src_index)
     cache = "cg" if s.nbytes == 16 else "ca"
