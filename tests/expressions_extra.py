@@ -16,13 +16,16 @@ import numpy as np
 from scipy.special import erf
 
 REDUCE_KNOBS = "WORK=t128,REDUCE=coop"  # one block of 128 cooperating threads, as the open reductions are pinned
-F, D = np.float32, np.float64
+H, F, D = np.float16, np.float32, np.float64
 
 EXACT = dict(rtol=0, atol=0)
 APPROX = dict(rtol=1e-5, atol=1e-6)  # ex2 / lg2 / rsqrt .approx: a few ulp
 REDUCE = dict(rtol=1e-4, atol=1e-4)
 FUSED = dict(rtol=1e-3, atol=1e-4)
 MATMUL = dict(rtol=1e-3, atol=1e-3)
+F16_APPROX = dict(rtol=2e-3, atol=1e-3)  # an f16 ulp is 2^-10 relative: room for one where the .approx recipes round the other way
+F16_REDUCE = dict(rtol=2e-3, atol=2e-2)
+F16_FUSED = dict(rtol=5e-3, atol=1e-4)
 
 
 def _softmax(x, axis=-1):
@@ -320,4 +323,17 @@ OPEN += [
          lambda x: [erf(x.astype(D)).astype(F).astype(D).sum(-1).astype(F)], knobs=REDUCE_KNOBS, **REDUCE),
     spec("f48_softmax_tanh", "torch.softmax(torch.tanh(torch.randn(64, 256)), -1)",
          lambda x: [_softmax(np.tanh(x.astype(D)).astype(F).astype(D)).astype(F)], **FUSED),
+    # ---- f16: a memory type; every op computes in f32 and rounds where the IR says f16, as numpy's float16 does
+    spec("p95_f16_mul_add", "torch.randn(1024, dtype=torch.float16) * torch.randn(1024, dtype=torch.float16) + 1.0",
+         lambda a, b: [a * b + H(1)], **EXACT),
+    spec("p96_f16_where", "x = torch.randn(1024, dtype=torch.float16); torch.where(x > 0, x, x * 0.5)",
+         lambda x: [np.where(x > 0, x, x * H(0.5))], **EXACT),
+    spec("p97_f16_to_f32", "torch.randn(1024, dtype=torch.float16).float() * 2.0", lambda x: [x.astype(F) * F(2)], **EXACT),
+    spec("p98_f16_relu_exp", "torch.exp(torch.relu(torch.randn(2048, dtype=torch.float16)))",
+         lambda x: [np.exp(np.maximum(x, H(0)))], **F16_APPROX),
+    spec("r50_f16_sum", "torch.randn(64, 256, dtype=torch.float16).sum(-1)",
+         lambda x: [x.astype(D).sum(-1).astype(H)], knobs=REDUCE_KNOBS, **F16_REDUCE),
+    spec("r51_f16_amax", "torch.randn(64, 256, dtype=torch.float16).amax(-1)", lambda x: [x.max(-1)], knobs=REDUCE_KNOBS, **EXACT),
+    spec("f50_f16_softmax", "torch.softmax(torch.randn(64, 256, dtype=torch.float16), dim=-1)",
+         lambda x: [_softmax(x.astype(D)).astype(H)], **F16_FUSED),
 ]

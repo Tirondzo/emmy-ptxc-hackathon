@@ -38,10 +38,18 @@ class Ty:
 
     @property
     def bank(self) -> str:
-        """The `.reg` declaration this type lives in; s32, u32 and b32 share "b32"."""
+        """The `.reg` declaration this type lives in; s32, u32 and b32 share "b32". A 16-bit value is
+        bits in a "b16" (PTX has no half register), an 8-bit one rides in a "b32"."""
         if self.kind is Kind.PRED:
             return "pred"
-        return f"{'f' if self.is_float else 'b'}{max(self.bits, 32)}"  # 8-bit values ride in 32-bit registers
+        if self.bits == 16:
+            return "b16"
+        return f"{'f' if self.is_float else 'b'}{max(self.bits, 32)}"
+
+    @property
+    def raw(self) -> str:
+        """The spelling for `ld`, `st` and `mov`, which move bits and know no `.f16`."""
+        return "b16" if self.bits == 16 else self.ptx
 
     def __call__(self, value: int | float) -> Imm:
         """A typed immediate: `INDEX(4)`, `B32(0x1f)`, `ty(0)`."""
@@ -61,31 +69,43 @@ class Imm:  # Const
             return hex(self.value)
         if not self.ty.is_float:
             return str(self.value)
+        if self.ty.bits == 16:  # PTX has no half constant: the bits, for the `mov.b16` that materializes it
+            return "0x%04X" % float_bits(self.value, 16)
         if self.ty.bits == 32:  # floats are written as exact bit patterns, never decimal
-            return "0f%08X" % f32_bits(self.value)
-        return "0d%016X" % struct.unpack(">Q", struct.pack(">d", self.value))[0]
+            return "0f%08X" % float_bits(self.value, 32)
+        return "0d%016X" % float_bits(self.value, 64)
 
 
-def f32_bits(value: float) -> int:
-    """The nearest f32; a magnitude beyond f32 rounds to inf, as every f32 operation does."""
+FORMATS = {16: ("e", "H"), 32: ("f", "I"), 64: ("d", "Q")}  # struct codes: the float of that width, its bits
+
+
+def float_bits(value: float, bits: int) -> int:
+    """`value` rounded to the float of `bits` bits, as an integer; a magnitude beyond its range is inf,
+    as it would be after any operation of that type."""
+    pack, unpack = FORMATS[bits]
     try:
-        return struct.unpack(">I", struct.pack(">f", value))[0]
+        return struct.unpack(">" + unpack, struct.pack(">" + pack, value))[0]
     except OverflowError:
-        return f32_bits(math.copysign(math.inf, value))
+        return float_bits(math.copysign(math.inf, value), bits)
 
 
 PRED = Ty(Kind.PRED, 1)
+F16 = Ty(Kind.FLOAT, 16)
 F32 = Ty(Kind.FLOAT, 32)
 F64 = Ty(Kind.FLOAT, 64)
 S32 = Ty(Kind.SIGNED, 32)
 S64 = Ty(Kind.SIGNED, 64)
+U16 = Ty(Kind.UNSIGNED, 16)
 U32 = Ty(Kind.UNSIGNED, 32)
 U64 = Ty(Kind.UNSIGNED, 64)
 B32 = Ty(Kind.BITS, 32)
 INDEX = S32
 BOOL = Ty(Kind.UNSIGNED, 8)  # a C bool in memory: one byte, 0 or 1; in registers a bool is PRED
 
-NAMES = {  # emmy's dtype names and the C spellings Smem uses; 16-bit types absent on purpose
+NAMES = {  # emmy's dtype names and the C spellings Smem uses
+    "f16": F16,
+    "half": F16,
+    "__half": F16,
     "f32": F32,
     "float": F32,
     "f64": F64,

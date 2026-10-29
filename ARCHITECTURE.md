@@ -85,6 +85,7 @@ one choice meta.json decides indirectly: its `rtol` / `atol` say how much a resu
 | Rounding | an error budget per kernel, `Lowering.budget` (`ops.Budget`): a quarter of meta.json's `rtol` / `atol` (`auto`), nothing (`exact`) or no limit (`fast`). A recipe with a faster spelling asks `allows(ulps, absolute)` with the worst case the PTX ISA states for it and takes it on yes, else the IEEE spelling: add / sub / mul without `.rn` so ptxas fuses mul + add into fma (1 ulp), `div.full` (2), `rcp.approx` / `sqrt.approx` (1), `tanh.approx` (2^12, so from rtol 2e-3), `sin.approx` on an argument reduced into [-pi, pi] (2^-20.4 absolute) or, with `Options.raw_trig` vouching that inputs stay within 100 pi, on the raw one (2^-14.7), `.ftz` on the approximate instructions (2^-126 absolute). A tolerance of zero keeps IEEE `.rn` everywhere: the open set's exact problems are single pointwise ops, where there is nothing to contract. Recipes keep their own `fma.rn` / `mul.rn`; f64 is always `.rn` | `ops.py`, `driver` |
 | Transcendentals | exp / log / rsqrt through `ex2` / `lg2` / `rsqrt.approx` (a few ulp); erf, sin, cos, tanh as polynomials at about 2 ulp, because `tanh.approx` is 2^-11 and `sin.approx` has no range reduction; pow as `ex2(y * lg2(abs x))` with C's sign and NaN rules | `ops.py` |
 | bool | a `.pred` register: comparisons produce it (`setp`), `where` selects on it (`selp`), arithmetic converts it to 1 / 0 and anything nonzero (NaN included) back to true, as C does; in a buffer it is one byte of 0 / 1, as C stores it; `selp` has no predicate form, so a select between predicates goes through 1 / 0 | `builder.cvt`, `builder.select`, `types.storable`, `ops.py` |
+| f16 | a memory type: `.b16` registers between `ld` / `st` and a `cvt`; every op computes in f32 and rounds once where the IR's dtype says f16, which is the IEEE half result for + - * / (f32 carries 2p+2 bits, so the double rounding is innocuous) and within an ulp of CUDA's `hexp`-style intrinsics elsewhere. PTX half arithmetic takes no constants, so none is spelled; a half in a shuffle rides in a `.b32`; emmy's own CUDA emits `mul.f16` + `add.f16`, which ptxas fuses, and so misses numpy's per-op rounding by an ulp where ptxc hits it | `types.Ty.bank` / `Ty.raw`, `ops.apply`, `builder.unify` / `cvt`, `block.shuffle` |
 | Floor division | `//` and `%` are Python's, floored, as torch and emmy's own folder define them; emmy's CUDA renders C's `/` and `%`, the same only for non-negative operands (every index it builds). By a literal 2^k they are `shr` and `and`, cheaper than C's and right for either sign. `/` is C's | `ops.shift`, `ops.down`, `expr.fold` |
 | Beyond the contract | `CastExpr`, `FuncCallExpr` and `Builtin` are starred in TASK.md (in no open or hidden problem) but lowered anyway, a line each: a cast is `cvt`, a call is the elementwise recipe at the first float argument's type (else the first argument's), a builtin (`thread_idx.x`, as emmy spells it) is its special register and `warp_size` is `Target.warp` | `expr.value` |
 | Indexing | one coordinate per axis, row-major; an empty index is element 0 (`sum_1[]`); any other count is `InvalidKernel` rather than a guessed flattening | `expr.address` |
@@ -111,7 +112,7 @@ ambient; there are no environment variables.
 |---|---|
 | an elementwise op | one `@recipe("name")` in `ops.py`, composing others by calling them |
 | a node kind | one `@rule("Kind")` in the matching `lower/` module |
-| a dtype | its names (emmy's, and the C spelling `Smem` carries) in `types.NAMES`, a bank in `Ty.bank` and `PREFIX`, conversions in `builder.cvt` |
+| a dtype | its names (emmy's, and the C spelling `Smem` carries) in `types.NAMES`, a bank in `Ty.bank` and `PREFIX`, conversions in `builder.cvt`; a type `ld` / `st` / `mov` cannot spell gets its spelling in `Ty.raw` |
 | a kernel-wide value | bind it in `lowerer.prologue` |
 | a target | one more `Target` in `config.py`, passed to `compile_file`; then `Unsupported` where an instruction is younger than the machine: `cp.async` (sm_80), `shfl.sync` / `activemask` / `bar.warp.sync` (sm_70), vector `red` (sm_90) |
 | a numeric convention | `config.py` (`HUGE`, `IDENTITY`); a recipe's own numbers stay in `ops.py` |
@@ -124,8 +125,9 @@ Each needs a concrete case before it earns its place:
 - an `optimize(module)` pass between lower and render (mov-chain folding, hoisting): the
   module is already data, so it slots in without touching the rules;
 - several `KernelOp`s per file (their shared arrays would need entry-qualified names);
-- 16-bit dtypes, swizzled shared layouts, `aux_threads`, `serial` axes, and the starred
-  nodes of the IR reference (TMA, mbarrier, tensor-core fragments). All raise `Unsupported`.
+- bf16 and the 16-bit integers (the runner accepts neither), swizzled shared layouts,
+  `aux_threads`, `serial` axes, and the starred nodes of the IR reference (TMA, mbarrier,
+  tensor-core fragments: emmy's f16 matmul is one). All raise `Unsupported`.
 
 ## Useful links
 

@@ -131,6 +131,7 @@ def assign(name: str, value: Value) -> None:
     syms = lowering().syms
     match syms.get(name):
         case Variable(reg=r):
+            value = cvt(value, r.ty)  # the register keeps its type, as a C variable does
             if not same(value, r):  # TODO: the producing instruction could target `r` directly
                 mov(r, value)
         case _:

@@ -177,8 +177,8 @@ class TestInput:
         assert "ghost" in self.one_line(ir)
 
     def test_unsupported_is_not_malformed(self, ir: Path) -> None:
-        self.meta(ir, lambda k: k["args"][0].update(dtype="f16"))
-        with pytest.raises(Unsupported, match="f16"):
+        self.meta(ir, lambda k: k["args"][0].update(dtype="bf16"))
+        with pytest.raises(Unsupported, match="bf16"):
             Kernel.load(ir)
 
     def test_reads_utf8(self, ir: Path) -> None:

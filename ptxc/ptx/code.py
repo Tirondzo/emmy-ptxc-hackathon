@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 from ..types import Imm, Ty
 
-PREFIX = {"pred": "p", "f32": "f", "f64": "fd", "b32": "r", "b64": "rd"}  # bank -> register name
+PREFIX = {"pred": "p", "b16": "rs", "f32": "f", "f64": "fd", "b32": "r", "b64": "rd"}  # bank -> register name
 
 
 @dataclass(frozen=True)

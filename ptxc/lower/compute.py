@@ -8,7 +8,7 @@ from .. import ir, ops
 from ..errors import InvalidKernel, Unsupported
 from ..ir import Node
 from ..ptx import Addr, Reg, Value, Vec, cvt, dotted, emit, materialize, reg
-from ..types import PRED, Ty
+from ..types import F16, PRED, Ty
 from . import expr
 from .lowerer import array, assign, declare, lowering, read, rule
 from .symbols import Array, Variable
@@ -74,20 +74,30 @@ def write(s: Node) -> None:
 def load_values(arr: Array, addr: Addr, count: int) -> list[Reg]:
     regs = [reg(arr.ty) for _ in range(count)]
     for vec, at, dst in accesses(addr, regs):
-        emit(dotted("ld", arr.space, vec, arr.ty.ptx), dst, at)
+        emit(dotted("ld", arr.space, vec, arr.ty.raw), dst, at)
     return regs
+
+
+def load_value(arr: Array, addr: Addr) -> Reg:
+    return load_values(arr, addr, 1)[0]
 
 
 def store_values(arr: Array, addr: Addr, regs: list[Reg]) -> None:
     ty = regs[0].ty
     for vec, at, src in accesses(addr, regs):
-        emit(dotted("st", arr.space, vec, ty.ptx), at, src)
+        emit(dotted("st", arr.space, vec, ty.raw), at, src)
+
+
+def store_value(arr: Array, addr: Addr, value: Value) -> None:
+    """`arr[addr] = value`, converted to the element type as a C store would."""
+    store_values(arr, addr, [materialize(cvt(value, arr.ty))])
 
 
 def add_values(arr: Array, addr: Addr, regs: list[Reg]) -> None:
-    """`red.add` one element at a time: no vector form before sm_90."""
+    """`red.add` one element at a time: no vector form before sm_90; a half's add is spelled `.noftz`."""
     for i, src in enumerate(regs):
-        emit(f"red.{arr.space}.add.{src.ty.ptx}", Addr(addr.base, addr.offset + i * src.ty.nbytes), src)
+        noftz = "noftz" if src.ty == F16 else None
+        emit(dotted("red", arr.space, "add", noftz, src.ty.ptx), Addr(addr.base, addr.offset + i * src.ty.nbytes), src)
 
 
 def accesses(addr: Addr, regs: list[Reg]) -> list[tuple[str | None, Addr, Reg | Vec]]:

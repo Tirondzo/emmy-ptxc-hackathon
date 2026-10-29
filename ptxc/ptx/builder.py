@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 
 from ..errors import Unsupported
-from ..types import B32, PRED, U32, Imm, Kind, Ty
+from ..types import B32, F16, F32, PRED, U32, Imm, Kind, Ty
 from .code import PREFIX, Instr, Label, Operand, PtxModule, Reg, Sym, Value, dotted
 
 _current: ContextVar[PtxBuilder] = ContextVar("builder")
@@ -77,7 +77,7 @@ def op(opcode: str, ty: Ty, *srcs: Operand) -> Reg:
 
 
 def mov(dst: Reg, src: Value) -> None:
-    emit(f"mov.{dst.ty.ptx}", dst, src)
+    emit(f"mov.{dst.ty.raw}", dst, src)
 
 
 def materialize(v: Value) -> Reg:
@@ -85,7 +85,9 @@ def materialize(v: Value) -> Reg:
         return v
     if v.ty.bits == 8:  # no 8-bit registers: the byte rides in a .b32, as it does after a load
         return Reg(op("mov", U32, U32(int(v.value))).name, v.ty)
-    return op("mov", v.ty, v)
+    r = reg(v.ty)
+    mov(r, v)
+    return r
 
 
 def cvt(src: Value, to: Ty) -> Value:
@@ -101,6 +103,8 @@ def cvt(src: Value, to: Ty) -> Value:
         return Reg(op("selp", U32, U32(1), U32(0), materialize(cvt(src, PRED))).name, to)
     if src.ty.bits == 8:  # zero-extended by the load: widen for free, then convert
         return cvt(Reg(src.name, U32), to)
+    if F16 in (src.ty, to) and Kind.PRED in (src.ty.kind, to.kind):  # setp / selp take no half constant: through f32
+        return cvt(cvt(src, F32), to)
     if to.kind is Kind.PRED:
         return setp("neu" if src.ty.is_float else "ne", src, src.ty(0))
     if src.ty.kind is Kind.PRED:
@@ -157,8 +161,10 @@ def truth(v: Value) -> Reg:
 
 
 def unify(a: Value, b: Value) -> tuple[Value, Value]:
-    """A common type for a binary op: float wins, then the wider."""
+    """A common type for a binary op: float wins, then the wider; f32 for halves, whose arithmetic is f32's."""
     ty = max(a.ty, b.ty, key=lambda t: (t.is_float, t.bits))
+    if ty == F16:
+        ty = F32
     return cvt(a, ty), cvt(b, ty)
 
 

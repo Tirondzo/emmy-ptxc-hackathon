@@ -18,7 +18,7 @@ from kernels import arg, load, ptx_of, shuffle, tile, write
 from ptxc import ir
 from ptxc.errors import InvalidKernel, Unsupported
 from ptxc.lower.block import halving
-from ptxc.types import F32, F64, S32, S64, U32, U64, ty_of
+from ptxc.types import F16, F32, F64, S32, S64, U32, U64, ty_of
 
 X, Y, OUT = arg("x", "f32"), arg("y", "f32"), arg("out", "f32")  # names and types only: nothing here is launched
 
@@ -46,7 +46,7 @@ class TestBuiltins:
 
 class TestTypes:
     @pytest.mark.parametrize(("spelling", "ty"), [("long long", S64), ("unsigned int", U32), ("unsigned long long", U64),
-                                                  ("int", S32), ("float", F32), ("double", F64)])
+                                                  ("int", S32), ("float", F32), ("double", F64), ("__half", F16)])
     def test_c_spellings(self, spelling: str, ty) -> None:
         assert ty_of(spelling) is ty
 
@@ -151,3 +151,40 @@ class TestShuffle:
     def test_longer_than_a_warp_is_refused(self) -> None:
         with pytest.raises(InvalidKernel, match="64"):
             self.lowered(64)
+
+
+class TestHalf:
+    """f16 is a memory type: `.b16` registers between `ld` / `st` and a `cvt`, every op computed in f32 and
+    rounded once where the IR says f16, no `.f16` arithmetic (which takes no constants)."""
+
+    X, OUT = arg("x", "f16"), arg("out", "f16")
+
+    def test_ops_compute_in_f32_and_round_once(self) -> None:
+        ptx = lowered(load("v", "x"), Assign("e", Op("exp"), ("v",), dtype=D.F16), write("out", "e"), args=[self.X, self.OUT])
+        assert re.search(r"ld\.global\.b16 %rs\d+, \[%rd\d+\];", ptx)
+        assert "cvt.f32.f16" in ptx and "ex2.approx.f32" in ptx and "cvt.rn.f16.f32" in ptx
+        assert re.search(r"st\.global\.b16 \[%rd\d+\], %rs\d+;", ptx)
+        assert all(line.lstrip().startswith("cvt.") for line in ptx.splitlines() if ".f16" in line)
+
+    def test_pairs_move_as_one_vector(self) -> None:
+        pair = Write(output="out", index=(BinaryExpr("*", Var("a0"), Literal(2, "int")),), values=("v", "w"),
+                     value_dtype=None, atomic=False, swizzle="NONE")
+        ptx = lowered(load("v", "x"), Assign("w", Op("negative"), ("v",), dtype=D.F16), pair, args=[self.X, arg("out", "f16", n=64)])
+        assert re.search(r"st\.global\.v2\.b16 \[%rd\d+\], \{%rs\d+, %rs\d+\};", ptx)
+
+    def test_constants_are_moved_as_bits(self) -> None:
+        """PTX has no half constant: the identity of a max over halves is the bits of -inf, which is what
+        emmy's -1e30 rounds to in f16."""
+        loop = Loop(axis=Axis("k", Dim(4)), body=(
+            Load(names=("v",), input="x", index=(Var("a0"), Var("k")), dtype=None), Accum("m", "v", Op("amax"), dtype=D.F16)))
+        ptx = lowered(loop, write("out", "m"), args=[{"name": "x", "dtype": "f16", "shape": [32, 4], "output": True}, self.OUT])
+        assert re.search(r"mov\.b16 %rs\d+, 0xFC00;", ptx) and "max.f32" in ptx
+
+    def test_shuffles_ride_in_a_b32(self) -> None:
+        ptx = lowered(load("m", "x"), shuffle(32, m="amax"), write("out", "m"), args=[self.X, self.OUT])
+        assert "cvt.u32.u16" in ptx and "shfl.sync.bfly.b32" in ptx and "cvt.u16.u32" in ptx
+
+    def test_predicates_come_through_f32(self) -> None:
+        ptx = lowered(load("v", "x"), Let("p", BinaryExpr(">", Var("v"), Literal(0.0, "float"))),
+                      Assign("w", Op("where"), ("p", "v", "v"), dtype=D.F16), write("out", "w"), args=[self.X, self.OUT])
+        assert re.search(r"setp\.gt\.f32 %p\d+, %f\d+, 0f00000000;", ptx) and not re.search(r"setp\.\w+\.f16", ptx)

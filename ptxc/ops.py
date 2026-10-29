@@ -23,7 +23,7 @@ from .errors import Unsupported
 from .ir import Tolerance
 from .options import Precision
 from .ptx import Reg, Value, bitcast, cvt, emit, op, reg, select, setp, truth, unify
-from .types import B32, F32, PRED, S32, U32, Imm, Kind, Ty
+from .types import B32, F16, F32, PRED, S32, U32, Imm, Kind, Ty
 
 type Recipe = Callable[..., Value]  # (ty: Ty, *args: Value) -> Value
 
@@ -104,12 +104,14 @@ def recipe(*names: str, raw: bool = False) -> Callable[[Recipe], Recipe]:
 
 
 def apply(name: str, ty: Ty, args: Sequence[Value]) -> Value:
-    """`name(args)` with a result of type `ty`."""
+    """`name(args)` with a result of type `ty`. An f16 result is computed in f32 and rounded once at the
+    end: PTX half arithmetic takes no constants, and f32 is wide enough that + - * / round the same."""
     if name not in OPS:
         raise Unsupported(f"elementwise op {name!r}")
+    compute = F32 if ty == F16 else ty
     if name not in RAW:
-        args = [cvt(a, ty) for a in args]
-    return cvt(OPS[name](ty, *args), ty)  # a raw recipe returns what it computed: a predicate, raw bits
+        args = [cvt(a, compute) for a in args]
+    return cvt(OPS[name](compute, *args), ty)  # a raw recipe returns what it computed: a predicate, raw bits
 
 
 def floating(name: str, ty: Ty, f64: bool = True) -> str:

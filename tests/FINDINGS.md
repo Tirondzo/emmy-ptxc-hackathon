@@ -216,15 +216,50 @@ rcp / sqrt / div and `.ftz` are worth about 2 us on a01 and nothing measurable e
 kept because the reference uses them and the tolerance pays for them. Where `exact` matches `auto`
 (a02, m21) ptxas had nothing to fuse that the schedule left adjacent, or the kernel is bound elsewhere.
 
+## f16 (2026-10-29)
+
+Emmy traces half tensors into the same IR: `f16` buffers, `f16` as the result dtype of every
+pointwise Assign (its CUDA uses `__half` operators and `hexp`, so each op rounds to half), `f32`
+accumulators rounded to f16 once at the store, and a softmax whose running max stays `f16` through
+WarpShuffle, a `float` Smem and TreeHalve.
+
+ptxc treats f16 as a memory type. A value is in a `.b16` register only between a load or store and
+a `cvt`; every op computes in f32 and `cvt.rn.f16.f32` rounds the result where the IR's dtype says
+f16. That is the correctly rounded half result for add, sub, mul, div and sqrt (f32 carries 24 bits,
+at least 2 x 11 + 2, so rounding twice equals rounding once) and within an f16 ulp of the `hexp`-style
+intrinsics elsewhere. Half arithmetic is never spelled: PTX takes no half constant operand (ptxas:
+"Arguments mismatch"), has no `mov.f16` or `ld.f16` (halves move as `.b16`), and `ex2.approx.f16`
+would be one more spelling for kernels that are launch-bound. Two or four halves load and store as
+`.v2.b16` / `.v4.b16`; a half in a shuffle rides in the low half of a `.b32`; the max identity
+`-1e30` is `mov.b16 %rs, 0xFC00`, -inf, which is also what `__float2half(-1e30f)` gives emmy.
+
+Seven problems in tests/problems (p95-p98, r50, r51, f50), expected values from numpy's float16,
+which rounds per op like the IR. On the RTX 5080:
+
+| problem | ptxc | emmy's reference | note |
+|---|---|---|---|
+| p95_f16_mul_add | exact (rtol = atol = 0) | 247 / 1024 off by one ulp | its `mul.f16` + `add.f16` carry no `.rn`, so ptxas fuses them into one rounding |
+| p96_f16_where, p97_f16_to_f32, r51_f16_amax | exact | exact | |
+| p98_f16_relu_exp, r50_f16_sum | exact | exact | tolerances 2e-3 / 1e-3 and 2e-3 / 2e-2 leave an ulp of slack, unused |
+| f50_f16_softmax | 5 f16 ulp, 16% of the tolerance | 5 ulp, 12% | |
+
+The same bits under `--precision exact` and `fast`: the budget only changes f32 spellings, and a
+conversion sits between every two of them, so ptxas has nothing to fuse. Time (bench.py, min of 5):
+7.8 to 9.3 us for ptxc, 7.6 to 9.5 us for the reference, launch-bound either way; the two
+conversions per op cost nothing measurable. The runner now counts ulps in the output's own width
+(an f16 ulp read as 8192 f32 ulps before) and hands nvrtc the pip CUDA headers, which the reference
+needs for `cuda_fp16.h`. Not covered: bf16 and i16 (the runner accepts neither), and emmy's f16
+matmul, which is a tensor-core kernel (ldmatrix, mma.sync, swizzled cp.async) at every size.
+
 ## Coverage
 
-145 own problems: pointwise sizes 7 to 1M, ranks 1 to 4, odd and prime widths, broadcasts, every
+152 own problems: pointwise sizes 7 to 1M, ranks 1 to 4, odd and prime widths, broadcasts, every
 op in emmy's CUDA table (add, subtract, multiply, divide, comparisons, maximum, minimum, pow,
 negative, copy, square, reciprocal, relu, sigmoid, exp, log, rsqrt, sin, cos, tanh, sqrt, erf, abs,
 where, bitwise_not / and / or) over wide ranges; reductions of 5 to 1M elements, rows of 8 to
 10007, columns, middle axes, 3-D, unpinned schedules with atomics; matmul 32 to 1024 square and
 rectangular, split-K, epilogues, bmm; softmax over 16 to 4096 and dim 0, layer / rms / l1 / l2
-norms, cosine similarity; attention 16 to 256 queries, 16 to 1000 keys, batched.
+norms, cosine similarity; attention 16 to 256 queries, 16 to 1000 keys, batched; f16 pointwise, reductions and softmax.
 
 Expressions emmy itself cannot trace (floor, exp2, expm1, log_softmax, var, prod, whole-tensor
 2-D max / min / sum, amin, reduction followed by a scalar epilogue, matmul followed by sum,
@@ -233,7 +268,7 @@ torch.remainder) stay listed under `UNTRACEABLE`.
 ## Reproduce
 
 ```
-python -m pytest tests -q                 # 426 passed, 3 skipped, 2 xfailed
+python -m pytest tests -q                 # 455 passed, 3 skipped, 2 xfailed
 python tests/bench.py m01_matmul_512 -c auto= -c exact=precision=exact   # what the tolerance buys
 python tests/gpu_runner.py --all          # the same, as a report with registers and timings
 python tests/gpu_runner.py p85_pow5       # one problem

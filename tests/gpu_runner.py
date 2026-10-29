@@ -140,7 +140,7 @@ def compile_cuda(source: str, arch: str) -> str:
         return rest[0] if len(rest) == 1 else rest
 
     prog = check(nvrtc.nvrtcCreateProgram(source.encode(), b"ref.cu", 0, [], []))
-    opts = [f"--gpu-architecture=compute_{arch.split('_')[1]}".encode(), b"-std=c++17"]
+    opts = [f"--gpu-architecture=compute_{arch.split('_')[1]}".encode(), b"-std=c++17", *cuda_includes()]
     err, = nvrtc.nvrtcCompileProgram(prog, len(opts), opts)
     size = check(nvrtc.nvrtcGetProgramLogSize(prog))
     log = b" " * size
@@ -151,6 +151,13 @@ def compile_cuda(source: str, arch: str) -> str:
     ptx = b" " * size
     check(nvrtc.nvrtcGetPTX(prog, ptx))
     return ptx.decode().rstrip("\x00")
+
+
+def cuda_includes() -> list[bytes]:
+    """`-I` for the CUDA headers a reference kernel may include (`cuda_fp16.h`), from the pip packages."""
+    dirs = sorted(Path(sys.prefix).glob("Lib/site-packages/nvidia/cu*/include"))
+    dirs += sorted(Path(sys.prefix).glob("lib/python*/site-packages/nvidia/cu*/include"))
+    return [f"-I{d}".encode() for d in dirs]
 
 
 # ---- the GPU --------------------------------------------------------------------------
@@ -337,11 +344,13 @@ def launch(gpu: Gpu, image: bytes, spec: dict, produced: dict[str, np.ndarray],
 
 
 def ulp_distance(got: np.ndarray, ref: np.ndarray) -> np.ndarray:
-    """How many f32 values lie between `got` and `ref` (0 when equal, -0 and +0 alike); NaN where either is not finite."""
+    """How many floats of `ref`'s width (f16 or f32) lie between `got` and `ref` (0 when equal, -0 and +0
+    alike); NaN where either is not finite."""
+    f, i = (np.float16, np.int16) if ref.dtype == np.float16 else (np.float32, np.int32)
 
-    def ordered(x: np.ndarray) -> np.ndarray:  # the f32 bit patterns on one monotonic integer scale
-        i = np.ascontiguousarray(x, dtype=np.float32).view(np.int32).astype(np.int64)
-        return np.where(i < 0, -(i & 0x7FFFFFFF), i)
+    def ordered(x: np.ndarray) -> np.ndarray:  # the bit patterns on one monotonic integer scale
+        b = np.ascontiguousarray(x, dtype=f).view(i).astype(np.int64)
+        return np.where(b < 0, -(b & np.iinfo(i).max), b)
 
     d = np.abs(ordered(got) - ordered(ref)).astype(np.float64)
     return np.where(np.isfinite(got) & np.isfinite(ref), d, np.nan)
@@ -349,9 +358,9 @@ def ulp_distance(got: np.ndarray, ref: np.ndarray) -> np.ndarray:
 
 def compare(got: np.ndarray, ref: np.ndarray, rtol: float, atol: float) -> dict:
     """The problem's check, plus two measures of how much precision the kernel gave away: the
-    largest distance in f32 ulps, and the share of the tolerance the worst element used
-    (0 exact, 1 at the limit, inf when a tolerance of zero was missed)."""
-    got = np.asarray(got, dtype=np.float32).reshape(ref.shape)
+    largest distance in ulps of the output's type, and the share of the tolerance the worst element
+    used (0 exact, 1 at the limit, inf when a tolerance of zero was missed)."""
+    got = np.asarray(got).reshape(ref.shape)
     g, r = got.astype(np.float64), ref.astype(np.float64)
     diff = np.abs(g - r)
     allowed = atol + rtol * np.abs(r)

@@ -27,8 +27,9 @@ from ..ptx import (
     reg,
     setp,
 )
-from ..types import B32, INDEX, PRED, U32, storable
+from ..types import B32, INDEX, PRED, U16, U32, storable
 from . import expr
+from .compute import load_value, store_value
 from .lowerer import array, assign, bind, lower, lowering, mutable, read, rule, scope, target
 from .symbols import Array, Bound
 
@@ -103,13 +104,13 @@ def tree_halve(s: Node) -> None:
         with if_(active(tid, stride, s.length)):
             partners = [Addr(slot.base, slot.offset + stride * buf.ty.nbytes) for buf, slot in zip(bufs, slots)]
             for name, buf, slot in zip(s.state, bufs, slots, strict=True):
-                assign(name, op(f"ld.{buf.space}", buf.ty, slot))
-            combine(s, [op(f"ld.{buf.space}", buf.ty, at) for buf, at in zip(bufs, partners)])
+                assign(name, load_value(buf, slot))
+            combine(s, [load_value(buf, at) for buf, at in zip(bufs, partners)])
             for name, buf, slot in zip(s.state, bufs, slots, strict=True):
-                emit(f"st.{buf.space}.{buf.ty.ptx}", slot, read(name))
+                store_value(buf, slot, read(name))
         barrier(s.barrier_id)
     for name, buf in zip(s.state, bufs, strict=True):
-        assign(name, op(f"ld.{buf.space}", buf.ty, expr.locate_value(buf, None)))
+        assign(name, load_value(buf, expr.locate_value(buf, None)))
 
 
 def halving(n: int) -> Iterator[int]:
@@ -132,7 +133,7 @@ def active(tid: Value, stride: int, length: int) -> Reg:
 
 def shuffle(mode: str, x: Value, lane: int, length: int, mask: Reg) -> Value:
     """`shfl.sync.{mode}.b32` of one value, `lane` its delta or source; the clamp keeps it inside aligned
-    `length`-lane groups. A 64-bit value goes as two halves, a predicate as 1 / 0."""
+    `length`-lane groups. A 64-bit value goes as two halves, a 16-bit one widened to 32, a predicate as 1 / 0."""
     if x.ty == PRED:
         return cvt(shuffle(mode, cvt(x, U32), lane, length, mask), PRED)
     clamp = B32(((target().warp - length) << 8) | target().lane_mask)
@@ -142,6 +143,9 @@ def shuffle(mode: str, x: Value, lane: int, length: int, mask: Reg) -> Value:
 
     if x.ty.bits == 32:
         return bitcast(shfl(bitcast(x, B32)), x.ty)
+    if x.ty.bits == 16:  # a half rides in the low half of a .b32
+        wide = cvt(bitcast(x, U16), U32)
+        return bitcast(cvt(shuffle(mode, wide, lane, length, mask), U16), x.ty)
     lo, hi = reg(B32), reg(B32)
     emit("mov.b64", Vec((lo, hi)), materialize(x))
     out = reg(x.ty)
