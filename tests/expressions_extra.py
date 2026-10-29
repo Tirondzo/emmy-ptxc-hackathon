@@ -310,6 +310,12 @@ OPEN += [
     spec("p89_exp_wide", "torch.exp(torch.randn(4096) * 8.0)", lambda x: [np.exp((x * F(8)).astype(D)).astype(F)], **APPROX),
     spec("p90_log_wide", "torch.log(torch.abs(torch.randn(4096)) * 1000.0 + 1.0)",
          lambda x: [np.log((np.abs(x) * F(1000) + F(1)).astype(D)).astype(F)], **APPROX),
+    # integer `//` and `%` floor, as torch does; emmy's own CUDA truncates and fails these (seeded ints are -3..3)
+    spec("p91_floordiv_neg", "torch.randint(-8, 8, (1024,), dtype=torch.int32) // 2", lambda x: [x // np.int32(2)], **EXACT),
+    spec("p92_remainder_neg", "torch.randint(-8, 8, (1024,), dtype=torch.int32) % 3", lambda x: [x % np.int32(3)], **EXACT),
+    spec("p93_cast_floordiv", "(torch.randn(1024) * 4).to(torch.int32) // 3",
+         lambda x: [(x * F(4)).astype(np.int32) // np.int32(3)], **EXACT),
+    spec("p94_floordiv_i64", "torch.randint(-8, 8, (1024,), dtype=torch.int64) // 3", lambda x: [x // np.int64(3)], **EXACT),
     spec("r48_sum_erf", "torch.erf(torch.randn(128, 256)).sum(-1)",
          lambda x: [erf(x.astype(D)).astype(F).astype(D).sum(-1).astype(F)], knobs=REDUCE_KNOBS, **REDUCE),
     spec("f48_softmax_tanh", "torch.softmax(torch.tanh(torch.randn(64, 256)), -1)",

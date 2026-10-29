@@ -91,9 +91,18 @@ def test_negative_of_unsigned(warp) -> None:
     assert run(warp, body, [arg("x", "i32", x), arg("out", "i32")])["out"].tolist() == (-x).tolist()
 
 
-def test_floor_divide_of_integers(warp) -> None:
-    """Non-negative operands, where floor and truncation agree: the domain emmy renders `//` as C's `/` for."""
-    x = (np.arange(32, dtype=np.int32) * 7) % 50
-    y = np.arange(32, dtype=np.int32) % 6 + 1
-    body = [tile(32, load("x", "x"), load("y", "y"), Assign("q", Op("floor_divide"), ("x", "y"), dtype=D.I32), write("out", "q"))]
-    assert run(warp, body, [arg("x", "i32", x), arg("y", "i32", y), arg("out", "i32")])["out"].tolist() == (x // y).tolist()
+@pytest.mark.parametrize("divisor", ["y", 3, -3, 4])
+def test_floor_division_of_integers(warp, divisor) -> None:
+    """`floor_divide` and `remainder` as torch computes them, negative operands included, by a register
+    or a constant; emmy's CUDA truncates instead, wrong wherever the signs differ."""
+    x = np.arange(32, dtype=np.int32) - 16
+    y = np.array([1, 2, 3, 5, -1, -2, -3, -5] * 4, np.int32)
+    by = Var("y") if divisor == "y" else Literal(divisor, "int")
+    body = [tile(32, load("x", "x"), load("y", "y"),
+                 Let("q", BinaryExpr("//", Var("x"), by), dtype=D.I32), Let("r", BinaryExpr("%", Var("x"), by), dtype=D.I32),
+                 Assign("fq", Op("floor_divide"), ("x", "y"), dtype=D.I32), Assign("fr", Op("remainder"), ("x", "y"), dtype=D.I32),
+                 *(write(f"out_{n}", n) for n in ("q", "r", "fq", "fr")))]
+    out = run(warp, body, [arg("x", "i32", x), arg("y", "i32", y)] + [arg(f"out_{n}", "i32") for n in ("q", "r", "fq", "fr")])
+    d = y if divisor == "y" else np.int32(divisor)
+    assert out["out_q"].tolist() == (x // d).tolist() and out["out_r"].tolist() == (x % d).tolist()
+    assert out["out_fq"].tolist() == (x // y).tolist() and out["out_fr"].tolist() == (x % y).tolist()

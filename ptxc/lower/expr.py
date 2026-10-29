@@ -12,7 +12,6 @@ for a loop it sees rolled.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Hashable, Sequence
 
 from .. import ir, ops
@@ -23,7 +22,7 @@ from ..types import F32, INDEX, PRED, S64, U32, U64, ty_of
 from .lowerer import lowering, options, read, target
 from .symbols import Array, Bound, Variable
 
-ARITH = {"+": "add", "-": "subtract", "*": "multiply", "/": "divide", "//": "divide", "%": "remainder"}
+ARITH = {"+": "add", "-": "subtract", "*": "multiply", "/": "divide", "//": "floor_divide", "%": "remainder"}
 COMPARE = {"==": "equal", "!=": "not_equal", "<": "less", "<=": "less_equal", ">": "greater", ">=": "greater_equal"}
 LOGIC = {"&&": "and", "||": "or", "and": "and", "or": "or"}
 SPECIAL = {"thread_idx": "tid", "block_idx": "ctaid", "block_dim": "ntid", "grid_dim": "nctaid"}  # as emmy spells them
@@ -95,16 +94,16 @@ def fold(operator: str, x: int | float, y: int | float) -> int | float:
             return x - y
         case "*":
             return x * y
-        case "/" | "//":  # C division, which is what `//` renders to in emmy too: toward zero, like div.s32
+        case "/":  # C division: toward zero, like div.s32
             return x / y if isinstance(x, float) else trunc_div(x, y)
+        case "//":  # Python's, like the floor_divide recipe
+            return x // y
         case _:
-            return x - y * trunc_div(x, y)  # C remainder
+            return x % y
 
 
-def trunc_div(x: int | float, y: int | float) -> int:
+def trunc_div(x: int, y: int) -> int:
     """Toward zero; in integers, since `x / y` rounds past 2^53."""
-    if isinstance(x, float):
-        return math.trunc(x / y)
     q = abs(x) // abs(y)
     return q if (x < 0) == (y < 0) else -q
 

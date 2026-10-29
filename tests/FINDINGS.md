@@ -22,7 +22,8 @@ ops (`//` tiles, masks, erf, sin, tanh, pow, 3-D softmax).
 
 1. **`//` in index expressions** (`lower/expr.py`): emmy decodes a flattened tile index with
    `(i // w, i % w)` for every pointwise tile of rank >= 2 and for 3-D reductions and softmax.
-   `//` now lowers to `div.s32` (operands are non-negative) and folds on constants. 8 problems.
+   `//` now lowers and folds on constants. 8 problems. (Later: `//` and `%` floor as torch does,
+   p91 to p94, where emmy's own CUDA truncates and fails.)
 2. **Elementwise ops** (`ops.py`): `square`, `erf`, `sin`, `cos`, `pow`, and an accurate `tanh`;
    aliases `exp_fast`, `pad`, `power`, `absolute`. The transcendentals are polynomials with
    explicit `fma.rn`, because `tanh.approx.f32` is only 2^-11 (125 ulp measured) and

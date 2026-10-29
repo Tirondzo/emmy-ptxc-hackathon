@@ -23,7 +23,7 @@ from .errors import Unsupported
 from .ir import Tolerance
 from .options import Precision
 from .ptx import Reg, Value, bitcast, cvt, emit, op, reg, select, setp, truth, unify
-from .types import B32, F32, PRED, S32, U32, Kind, Ty
+from .types import B32, F32, PRED, S32, U32, Imm, Kind, Ty
 
 type Recipe = Callable[..., Value]  # (ty: Ty, *args: Value) -> Value
 
@@ -96,7 +96,7 @@ def recipe(*names: str, raw: bool = False) -> Callable[[Recipe], Recipe]:
     def register(fn: Recipe) -> Recipe:
         for name in names:
             OPS[name] = fn
-            if raw:
+            if raw: # a raw recipe returns what it computed: a predicate, raw bits
                 RAW.add(name)
         return fn
 
@@ -172,17 +172,38 @@ def divide(ty: Ty, x: Value, y: Value) -> Value:
 
 @recipe("floor_divide")
 def floor_divide(ty: Ty, x: Value, y: Value) -> Value:
-    """Integers only, as emmy renders it: C's truncating `/` (the operands it meets are non-negative)."""
-    if ty.is_float:
-        raise Unsupported("float floor_divide")
-    return divide(ty, x, y)
+    """Python's `//`, as torch and emmy's own folder define it (its CUDA renders C's `/`, the same only for x >= 0)."""
+    if k := shift(ty, y):
+        return op("shr", ty, x, U32(k))
+    q = op("div", ty, x, y)
+    return op("sub", ty, q, cvt(down(op("rem", ty, x, y), y), ty)) if ty.kind is Kind.SIGNED else q
 
 
 @recipe("remainder", "mod")
 def remainder(ty: Ty, x: Value, y: Value) -> Value:
+    """Python's `%`: the remainder takes the divisor's sign."""
+    if shift(ty, y):
+        bits = Ty(Kind.BITS, ty.bits)
+        return cvt(op("and", bits, cvt(x, bits), bits(y.value - 1)), ty)
+    r = op("rem", ty, x, y)
+    return op("add", ty, r, select(ty, y, ty(0), down(r, y))) if ty.kind is Kind.SIGNED else r
+
+
+def shift(ty: Ty, y: Value) -> int:
+    """k when y is the literal 2^k, k > 0: in two's complement the floor is then a shift and a mask,
+    cheaper than C's `/` and right for either sign. Every power-of-two index decode lands here."""
     if ty.is_float:
-        raise Unsupported("float remainder")
-    return op("rem", ty, x, y)
+        raise Unsupported(f"float floor division on {ty.ptx}")
+    if not isinstance(y, Imm) or y.value <= 1 or y.value & (y.value - 1):
+        return 0
+    return int(y.value).bit_length() - 1
+
+
+def down(r: Reg, y: Value) -> Reg:
+    """Where flooring steps one below C's quotient: a nonzero remainder of the other sign than the divisor."""
+    if isinstance(y, Imm):
+        return setp("lt" if y.value > 0 else "gt", r, r.ty(0))
+    return op("and", PRED, setp("ne", r, r.ty(0)), op("xor", PRED, setp("lt", r, r.ty(0)), setp("lt", y, r.ty(0))))
 
 
 @recipe("maximum")

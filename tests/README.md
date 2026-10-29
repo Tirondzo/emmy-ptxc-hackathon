@@ -20,6 +20,7 @@ tests/
   test_precision.py      the precision policy over rtol / atol, the spelling each mode emits, every mode on the GPU
   bench.py               ptxc under several option sets against emmy's reference: min over repeats, registers, spills
   expressions_extra.py   torch expressions for our own problems, one list per category
+  hacks.py               the problems we propose for the hidden set, and what each one catches
   problems/              generated from expressions_extra.py (IR + meta + expected, like the open set)
 ```
 
@@ -61,6 +62,22 @@ inputs modified by the kernel, and outputs that differ between repeated launches
 not counted as a failure when the kernel accumulates with atomics). For every checked output it
 also prints how much precision was given away: the largest distance from the expected value in
 f32 ulps, and the share of the tolerance (`atol + rtol * |expected|`) the worst element used.
+
+## Hacks for the hidden set
+
+`hacks.py` lists problems from `tests/problems` we propose to the judges for the hidden set, in
+the Codeforces sense of a hack: each is a valid emmy-generated problem inside the five
+categories that a compiler can fail while passing the whole open set (`//` in an index, bool
+masks, `pow`, a sub-warp block, a zero-trip strided loop, multi-block atomics, softmax rows
+narrower than the block, integer `//` and `%` of negative values). Each folder is in the open set's
+format and goes into the hidden set as is. emmy's own `.ref.cu` passes all but the integer
+division ones, where it truncates and torch floors. A further hack needs no folder: permute `arg_order` in any meta.json (`TestArgOrder` in
+test_contract.py).
+
+```
+python -m pytest tests -q -m hack
+python tests/gpu_runner.py f40_softmax_16 --ref     # emmy's own CUDA agrees with expected.npz
+```
 
 ## Generating more problems
 

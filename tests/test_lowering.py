@@ -98,7 +98,7 @@ class TestOps:
         ints = [arg("x", "i32"), arg("y", "i32"), arg("out", "i32")]
         ptx = lowered(load("x", "x"), load("y", "y"), Assign("q", Op("floor_divide"), ("x", "y"), dtype=D.I32), write("out", "q"), args=ints)
         assert re.search(r"div\.s32 %r\d+, %r\d+, %r\d+;", ptx)
-        with pytest.raises(Unsupported, match="floor_divide"):
+        with pytest.raises(Unsupported, match="floor division"):
             lowered(load("x", "x"), load("y", "y"), Assign("q", Op("floor_divide"), ("x", "y"), dtype=D.F32), write("out", "q"))
 
     @pytest.mark.parametrize(("operator", "dtype", "cmp"), [("!=", "f32", "neu.f32"), ("!=", "i32", "ne.s32"), ("==", "f32", "eq.f32"),

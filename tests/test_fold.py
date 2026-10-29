@@ -1,9 +1,9 @@
 """Constant folding must agree with the instructions it replaces.
 
-emmy renders `//` as C's `/` (ir/expr.py: "truncation == floor for >= 0"), so a folded quotient has
-to truncate toward zero like `div.s32`, negative constants included, and a folded remainder has to
-take the dividend's sign like `rem.s32`. The GPU test runs the same pairs through those two
-instructions and compares bit for bit.
+`/` is C's: toward zero, like `div.s32`. `//` and `%` are Python's, floored, as torch and emmy's own
+folder define them; emmy's CUDA renders them as C's `/` and `%`, which agree only for non-negative
+operands. The GPU test runs the `/` pairs through `div.s32` / `rem.s32` and compares bit for bit;
+test_warp.py does the same for the floored recipes.
 """
 
 from __future__ import annotations
@@ -57,32 +57,31 @@ DIV_REM_PTX = """\
 
 
 @pytest.mark.parametrize(("x", "y"), PAIRS)
-def test_fold_is_c_arithmetic(x: int, y: int) -> None:
+def test_fold_divisions(x: int, y: int) -> None:
     q, r = fold("//", x, y), fold("%", x, y)
-    assert q == fold("/", x, y), "`//` and `/` are the same C division"
-    assert q * y + r == x, "the C identity"
-    assert abs(q) == abs(x) // abs(y), "the quotient is truncated toward zero"
-    assert r == 0 or (r < 0) == (x < 0), "the remainder takes the dividend's sign"
+    assert q * y + r == x, "`//` and `%` are one division"
+    assert q <= x / y < q + 1, "the quotient is floored"
+    assert r == 0 or (r < 0) == (y < 0), "the remainder takes the divisor's sign"
+    assert abs(fold("/", x, y)) == abs(x) // abs(y), "`/` is truncated toward zero"
 
 
 def test_arith_folds_immediates() -> None:
     """Two constants fold to an immediate without emitting anything (no builder is active here)."""
-    assert arith("//", INDEX(-7), INDEX(2)) == Imm(-3, INDEX)
-    assert arith("%", INDEX(-7), INDEX(2)) == Imm(-1, INDEX)
-    assert arith("//", INDEX(7), INDEX(-2)) == Imm(-3, INDEX)
-    assert arith("/", INDEX(-7), INDEX(-2)) == Imm(3, INDEX)
+    assert arith("//", INDEX(-7), INDEX(2)) == Imm(-4, INDEX)
+    assert arith("%", INDEX(-7), INDEX(2)) == Imm(1, INDEX)
+    assert arith("//", INDEX(7), INDEX(-2)) == Imm(-4, INDEX)
+    assert arith("/", INDEX(-7), INDEX(2)) == Imm(-3, INDEX)
 
 
 def test_fold_is_exact_past_2_53() -> None:
     """Folding divides in integers: `x / y` in floats would round a 64-bit quotient."""
     big = 2**60 + 1
-    assert fold("//", big, 3) == big // 3 and fold("%", big, 3) == big % 3
-    assert fold("//", -big, 3) == -(big // 3) and fold("%", -big, 3) == -(big % 3)
+    assert fold("/", big, 3) == big // 3 and fold("/", -big, 3) == -(big // 3)
     assert fold("/", 7.0, 2.0) == 3.5
 
 
 def test_fold_matches_div_rem_s32(gpu: Gpu) -> None:
-    """The folded values are what `div.s32` / `rem.s32` compute for the same operands."""
+    """The folded `/` is what `div.s32` computes for the same operands, and `rem.s32` what is left."""
     xs, ys = (np.array(v, np.int32) for v in zip(*PAIRS, strict=True))
     n = len(PAIRS)
     spec = {
@@ -96,5 +95,5 @@ def test_fold_matches_div_rem_s32(gpu: Gpu) -> None:
         ],
     }
     out = launch(gpu, assemble(DIV_REM_PTX, gpu.arch).cubin, spec, {}).outputs
-    assert out["q"].tolist() == [fold("//", x, y) for x, y in PAIRS]
-    assert out["r"].tolist() == [fold("%", x, y) for x, y in PAIRS]
+    assert out["q"].tolist() == [fold("/", x, y) for x, y in PAIRS]
+    assert out["r"].tolist() == [x - y * fold("/", x, y) for x, y in PAIRS]

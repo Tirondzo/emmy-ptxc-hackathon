@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # the ptxc package
 
 import simwarp  # noqa: E402
 from gpu_runner import CONTRACT_ARCH, DEFAULT_COMPILER, PROBLEM_DIRS, Gpu, all_problems, assemble, launch  # noqa: E402
+from hacks import HACKS  # noqa: E402
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -29,11 +30,16 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption("--repeat", type=int, default=3, help="launches per kernel whose outputs must agree bitwise")
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line("markers", "hack: a problem proposed for the hidden set (hacks.py)")
+
+
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
     if "problem_dir" in metafunc.fixturenames:
         roots = [Path(p) for p in metafunc.config.getoption("--problems")] or PROBLEM_DIRS
         dirs = all_problems(roots)
-        metafunc.parametrize("problem_dir", dirs, ids=[d.name for d in dirs])
+        metafunc.parametrize("problem_dir", [pytest.param(d, id=d.name, marks=[pytest.mark.hack] * (d.name in HACKS))
+                                             for d in dirs])
 
 
 @pytest.fixture(scope="session")
