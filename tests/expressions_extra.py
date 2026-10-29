@@ -336,4 +336,7 @@ OPEN += [
     spec("r51_f16_amax", "torch.randn(64, 256, dtype=torch.float16).amax(-1)", lambda x: [x.max(-1)], knobs=REDUCE_KNOBS, **EXACT),
     spec("f50_f16_softmax", "torch.softmax(torch.randn(64, 256, dtype=torch.float16), dim=-1)",
          lambda x: [_softmax(x.astype(D)).astype(H)], **F16_FUSED),
+    # ---- tensor cores: emmy's f16 matmul is cp.async into swizzled slabs, ldmatrix, mma.sync m16n8k16 (f32 accumulate)
+    spec("m50_f16_mm", "torch.randn(128, 256, dtype=torch.float16) @ torch.randn(256, 128, dtype=torch.float16)",
+         lambda a, b: [mm(a, b).astype(H)], **F16_REDUCE),
 ]

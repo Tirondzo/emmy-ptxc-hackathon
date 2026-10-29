@@ -34,6 +34,7 @@ from .lowerer import array, assign, bind, lower, lowering, mutable, read, rule, 
 from .symbols import Array, Bound
 
 POOL = "_smem_pool"  # the one `.extern .shared` array when meta.json launches dynamic shared memory
+SWIZZLE = {"NONE": 0, "B32": 0x1, "B64": 0x3, "B128": 0x7}  # mode -> the row bits XORed into a row's 16-byte chunk index
 
 
 @rule("Smem")
@@ -161,14 +162,28 @@ def combine(s: Node, others: Sequence[Value]) -> None:
         lower(s.combine_states)
 
 
+def slab(arr: Array, index: Sequence[Node], mode: str) -> Addr:
+    """`arr[index]` in a shared slab laid out in `mode`: emmy's software swizzle, which XORs row bits
+    of the 16-bit element index into its 16-byte chunk, `e ^ (((e >> 6) & bits) << 3)`, so the rows
+    an `ldmatrix` reads at once sit in different banks. The cp.async fill and the ldmatrix drain
+    both go through here, so they agree by construction; "NONE" is the plain address."""
+    if mode not in SWIZZLE:
+        raise Unsupported(f"swizzle {mode}")
+    if not SWIZZLE[mode]:
+        return expr.address(arr, index)
+    if arr.ty.bits != 16:
+        raise Unsupported(f"swizzle {mode} on {arr.ty.ptx} elements")
+    e = materialize(cvt(expr.flat(arr, index), B32))
+    field = op("shl", B32, op("and", B32, op("shr", B32, e, U32(6)), B32(SWIZZLE[mode])), U32(3))
+    return expr.locate_value(arr, cvt(op("xor", B32, e, field), INDEX))
+
+
 @rule("CpAsyncCopy")
 def cp_async_copy(s: Node) -> None:
-    if s.swizzle != "NONE":
-        raise Unsupported(f"swizzle {s.swizzle}")
     if s.nbytes not in (4, 8, 16):
         raise Unsupported(f"cp.async of {s.nbytes} bytes")
     index = s.smem_index if s.lane_index is None else [ir.plus(a, b) for a, b in zip(s.smem_index, s.lane_index)]
-    dst = expr.address(array(s.smem), index)
+    dst = slab(array(s.smem), index, s.swizzle)
     src = expr.address(array(s.src), s.src_index)
     cache = "cg" if s.nbytes == 16 else "ca"
     emit(f"cp.async.{cache}.shared.global", dst, src, INDEX(s.nbytes))

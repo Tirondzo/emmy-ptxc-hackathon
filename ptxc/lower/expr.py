@@ -233,9 +233,19 @@ def keys(tag: str, info: object, *parts: Node) -> Hashable | None:
 
 
 def address(arr: Array, index: Sequence[Node]) -> Addr:
-    """`arr[index]`, row-major; the constant part of every coordinate becomes the displacement.
-    One coordinate per axis, or none for element 0 (`sum_1[]`): any other count is refused
-    rather than flattened by a guess."""
+    """`arr[index]`, row-major; the constant part of every coordinate becomes the displacement."""
+    return locate(arr, *coordinates(arr, index))
+
+
+def flat(arr: Array, index: Sequence[Node]) -> Value:
+    """The row-major element index of `arr[index]` as one value, for a caller that transforms it
+    before addressing (`block.slab`) and so forgoes the displacement."""
+    return realize(*coordinates(arr, index))
+
+
+def coordinates(arr: Array, index: Sequence[Node]) -> tuple[Terms, int]:
+    """`arr[index]` as an affine element index. One coordinate per axis, or none for element 0
+    (`sum_1[]`): any other count is refused rather than flattened by a guess."""
     if index and len(index) != len(arr.shape):
         raise InvalidKernel(f"{len(index)} coordinates into {arr.name}{list(arr.shape)}")
     terms: Terms = {}
@@ -244,7 +254,7 @@ def address(arr: Array, index: Sequence[Node]) -> Addr:
         t, c = affine(e)
         terms = combine(terms, scale(t, stride))
         elems += c * stride
-    return locate(arr, terms, elems)
+    return terms, elems
 
 
 def locate_value(arr: Array, flat: Value | None, elems: int = 0) -> Addr:

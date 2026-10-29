@@ -47,7 +47,7 @@ one choice meta.json decides indirectly: its `rtol` / `atol` say how much a resu
   constant, so `(a0 * 4) + 3` is a `[base+12]` displacement and `a1_b * 64 - a1_b * 64` costs
   nothing; `expr.address` computes one base register per distinct (array, terms) in a scope.
   A type applied to a number is an immediate: `INDEX(4)`, `ty(0)`.
-- **One rule per node kind.** `@rule("Kind")` in `lower/{compute,control,loops,block}.py`. An
+- **One rule per node kind.** `@rule("Kind")` in `lower/{compute,control,loops,block,fragments}.py`. An
   unknown kind, op, field value or dtype raises `Unsupported` compilation error.
 - **Names are lexically scoped.** An SSA name (`Load`, `Assign`, `Let`) is `Bound` in the
   innermost scope and shadows an outer binding until the block closes, as in C. Loop-carried
@@ -86,6 +86,8 @@ one choice meta.json decides indirectly: its `rtol` / `atol` say how much a resu
 | Transcendentals | exp / log / rsqrt through `ex2` / `lg2` / `rsqrt.approx` (a few ulp); erf, sin, cos, tanh as polynomials at about 2 ulp, because `tanh.approx` is 2^-11 and `sin.approx` has no range reduction; pow as `ex2(y * lg2(abs x))` with C's sign and NaN rules | `ops.py` |
 | bool | a `.pred` register: comparisons produce it (`setp`), `where` selects on it (`selp`), arithmetic converts it to 1 / 0 and anything nonzero (NaN included) back to true, as C does; in a buffer it is one byte of 0 / 1, as C stores it; `selp` has no predicate form, so a select between predicates goes through 1 / 0 | `builder.cvt`, `builder.select`, `types.storable`, `ops.py` |
 | f16 | a memory type: `.b16` registers between `ld` / `st` and a `cvt`; every op computes in f32 and rounds once where the IR's dtype says f16, which is the IEEE half result for + - * / (f32 carries 2p+2 bits, so the double rounding is innocuous) and within an ulp of CUDA's `hexp`-style intrinsics elsewhere. PTX half arithmetic takes no constants, so none is spelled; a half in a shuffle rides in a `.b32`; emmy's own CUDA emits `mul.f16` + `add.f16`, which ptxas fuses, and so misses numpy's per-op rounding by an ulp where ptxc hits it | `types.Ty.bank` / `Ty.raw`, `ops.apply`, `builder.unify` / `cvt`, `block.shuffle` |
+| Tensor cores | emmy's f16 matmul. `RegFragment` is one register per ISA slot per lane (A four `.b32` of packed halves, B two, C four `.f32` zeroed); a family (`count`) is one binding per member under its spelled name, so `_b[_r0]` resolves once its loop is unrolled and is `Unsupported` while it is a register. `LdmatrixLoad` is `ldmatrix.x4` (A), `x2.trans` (B) or `x4.trans` (two B fragments, `pair_frag`): lane l addresses row l % 16 of the tile and column block l // 16. `MmaSyncPtx` is `mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32` with d = c. `RegStore` writes rows g and g + 8 at columns 2t, 2t + 1 (g = l // 4, t = l % 4), one `.v2` pair per row, converted to the buffer's type. The lane maps are index expressions over the prologue's `lane`, so `expr.address` folds them like any index. Whole warps only: a block not a multiple of 32 or a guarded tile is `InvalidKernel`, below sm_80 `Unsupported`; every field emmy's nodes carry beyond the f16 matmul (gmem-direct loads, byte slabs, guards, epilogues, other atoms and dtypes) is `Unsupported` first | `fragments.py` |
+| Swizzled slabs | emmy's software swizzle on a 16-bit slab: `e ^ (((e >> 6) & bits) << 3)` on the element index, bits 7 / 3 / 1 for B128 / B64 / B32, so the rows one `ldmatrix` reads sit in different banks. The cp.async fill and the ldmatrix drain go through one function and agree by construction; the swizzled index is one value, so it forgoes the displacement | `block.slab` |
 | Floor division | `//` and `%` are Python's, floored, as torch and emmy's own folder define them; emmy's CUDA renders C's `/` and `%`, the same only for non-negative operands (every index it builds). By a literal 2^k they are `shr` and `and`, cheaper than C's and right for either sign. `/` is C's | `ops.shift`, `ops.down`, `expr.fold` |
 | Beyond the contract | `CastExpr`, `FuncCallExpr` and `Builtin` are starred in TASK.md (in no open or hidden problem) but lowered anyway, a line each: a cast is `cvt`, a call is the elementwise recipe at the first float argument's type (else the first argument's), a builtin (`thread_idx.x`, as emmy spells it) is its special register and `warp_size` is `Target.warp` | `expr.value` |
 | Indexing | one coordinate per axis, row-major; an empty index is element 0 (`sum_1[]`); any other count is `InvalidKernel` rather than a guessed flattening | `expr.address` |
@@ -114,7 +116,8 @@ ambient; there are no environment variables.
 | a node kind | one `@rule("Kind")` in the matching `lower/` module |
 | a dtype | its names (emmy's, and the C spelling `Smem` carries) in `types.NAMES`, a bank in `Ty.bank` and `PREFIX`, conversions in `builder.cvt`; a type `ld` / `st` / `mov` cannot spell gets its spelling in `Ty.raw` |
 | a kernel-wide value | bind it in `lowerer.prologue` |
-| a target | one more `Target` in `config.py`, passed to `compile_file`; then `Unsupported` where an instruction is younger than the machine: `cp.async` (sm_80), `shfl.sync` / `activemask` / `bar.warp.sync` (sm_70), vector `red` (sm_90) |
+| a target | one more `Target` in `config.py`, passed to `compile_file`; then `Unsupported` where an instruction is younger than the machine: `cp.async` (sm_80), `shfl.sync` / `activemask` / `bar.warp.sync` (sm_70), vector `red` (sm_90); `mma.sync.m16n8k16` already is (`fragments.whole_warps`) |
+| a tensor-core node | one `@rule` in `lower/fragments.py`: a fragment is a `Fragment` symbol (its registers in ISA slot order), a lane map an index expression, a slab address `block.slab`; whatever field the rule does not read is `Unsupported` first |
 | a numeric convention | `config.py` (`HUGE`, `IDENTITY`); a recipe's own numbers stay in `ops.py` |
 | a faster spelling | one `if allows(ulps=..., absolute=...)` in the recipe, with the bound the ISA states (or one measured), and a test that the GPU keeps it |
 
@@ -125,9 +128,10 @@ Each needs a concrete case before it earns its place:
 - an `optimize(module)` pass between lower and render (mov-chain folding, hoisting): the
   module is already data, so it slots in without touching the rules;
 - several `KernelOp`s per file (their shared arrays would need entry-qualified names);
-- bf16 and the 16-bit integers (the runner accepts neither), swizzled shared layouts,
-  `aux_threads`, `serial` axes, and the starred nodes of the IR reference (TMA, mbarrier,
-  tensor-core fragments: emmy's f16 matmul is one). All raise `Unsupported`.
+- bf16 and the 16-bit integers (the runner accepts neither), `aux_threads`, `serial` axes, and the
+  starred nodes of the IR reference beyond the f16 matmul's: TMA, mbarrier, wgmma, and the fragment
+  epilogues (`FragmentApply`, `FragmentRowReduce`, `FragmentRepack`, `FragmentPromote`), which emmy
+  emits only for its flash-attention mma schedule. All raise `Unsupported`.
 
 ## Useful links
 

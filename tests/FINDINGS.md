@@ -248,8 +248,33 @@ conversion sits between every two of them, so ptxas has nothing to fuse. Time (b
 7.8 to 9.3 us for ptxc, 7.6 to 9.5 us for the reference, launch-bound either way; the two
 conversions per op cost nothing measurable. The runner now counts ulps in the output's own width
 (an f16 ulp read as 8192 f32 ulps before) and hands nvrtc the pip CUDA headers, which the reference
-needs for `cuda_fp16.h`. Not covered: bf16 and i16 (the runner accepts neither), and emmy's f16
-matmul, which is a tensor-core kernel (ldmatrix, mma.sync, swizzled cp.async) at every size.
+needs for `cuda_fp16.h`. Not covered: bf16 and i16 (the runner accepts neither). emmy's f16
+matmul is a tensor-core kernel at every size: the next section.
+
+## Tensor cores (2026-10-29)
+
+emmy's f16 matmul (`m50_f16_mm`, 128x256 @ 256x128) is `cp.async` into B128 / B64-swizzled half
+slabs, `ldmatrix` (x4 for A, x4.trans filling two B fragments), `mma.sync.m16n8k16` with f32
+accumulators in a re-rolled family loop (`_c0_[_r0]`), and a per-lane fragment store. All of it is
+one new rule module, `lower/fragments.py`, plus a fourth symbol kind (`Fragment`), the flat element
+index in `expr`, and the swizzle in `block.slab`, which the cp.async fill now shares with the
+ldmatrix drain. Every other field of the four nodes (gmem-direct loads, byte slabs, guards,
+epilogues, other atoms, bf16 / fp8, f16 accumulators) is `Unsupported`, and the whole-warp contract
+of the `.aligned` instructions is checked (block a multiple of 32, no guarded tile, sm_80).
+
+The loops come out straight under the default policy, so the family subscript is a constant; under
+`--unroll none` it is a register and the kernel is refused, which `bench.py` now reports as a cell.
+The GPU test passes at 36% of the tolerance (27 f16 ulp of accumulation-order difference against
+the f64 reference). Time (bench.py, min of 3 over 30 launches, RTX 5080):
+
+| problem | auto | force | exact | reference |
+|---|---|---|---|---|
+| m50_f16_mm | 10.0 us (86r) | 10.1 us (86r) | 10.0 us (86r) | 9.7 us (66r) |
+
+Within 3% of emmy's CUDA. The 20 extra registers are the swizzle applied to each ldmatrix's full
+element index (shr, and, shl, xor per load, 84 in the kernel); emmy splits the XOR so the lane's
+part is computed once and the tile row is an immediate, which would also restore the displacement
+the swizzled address forgoes. Deliberately left out: the measured cost is 0.3 us.
 
 ## Coverage
 
@@ -268,7 +293,7 @@ torch.remainder) stay listed under `UNTRACEABLE`.
 ## Reproduce
 
 ```
-python -m pytest tests -q                 # 455 passed, 3 skipped, 2 xfailed
+python -m pytest tests -q                 # 472 passed, 3 skipped, 2 xfailed
 python tests/bench.py m01_matmul_512 -c auto= -c exact=precision=exact   # what the tolerance buys
 python tests/gpu_runner.py --all          # the same, as a report with registers and timings
 python tests/gpu_runner.py p85_pow5       # one problem

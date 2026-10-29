@@ -60,7 +60,15 @@ class Array:
         return row_major(self.shape)
 
 
-type Symbol = Bound | Variable | Array
+@dataclass(frozen=True)
+class Fragment:
+    """An mma operand's per-lane registers in the ISA's slot order: refilled by `ldmatrix`, accumulated
+    into by `mma`, so mutated in place like a Variable, never rebound."""
+
+    regs: tuple[Reg, ...]
+
+
+type Symbol = Bound | Variable | Array | Fragment
 
 
 class Symbols:

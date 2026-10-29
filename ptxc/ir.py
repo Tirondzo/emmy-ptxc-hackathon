@@ -46,10 +46,27 @@ def ty(dtype: DataType | str | None) -> Ty | None:
     return ty_of(dtype if isinstance(dtype, str) else dtype.name)
 
 
-def plus(a: Expr, b: Expr) -> Expr:
+def var(name: str) -> Expr:
+    from emmy.compiler.ir.expr import Var
+
+    return Var(name=name)
+
+
+def literal(value: int) -> Expr:
+    from emmy.compiler.ir.expr import Literal
+
+    return Literal(value=value, dtype="int")
+
+
+def binary(op: str, a: Expr, b: Expr) -> Expr:
+    """An index expression a rule builds itself (a lane's offset into a tile), in the IR's own vocabulary."""
     from emmy.compiler.ir.expr import BinaryExpr
 
-    return BinaryExpr(op="+", left=a, right=b)
+    return BinaryExpr(op=op, left=a, right=b)
+
+
+def plus(a: Expr, b: Expr) -> Expr:
+    return binary("+", a, b)
 
 
 def op_name(op: ElementwiseImpl) -> str:

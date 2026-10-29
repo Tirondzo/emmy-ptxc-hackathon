@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gpu_runner import PROBLEM_DIRS, Gpu, all_problems, find_problem, run_problem  # noqa: E402
 
 from ptxc import Options, compile_file  # noqa: E402
+from ptxc.errors import CompileError  # noqa: E402
 
 DEFAULT_CONFIGS = ["auto=", "none=unroll=none", "force=unroll=force", "exact=precision=exact"]
 TYPES = {f.name: f.type for f in fields(Options)}
@@ -52,7 +53,10 @@ def measure(pdir: Path, gpu: Gpu, options: Options | None, repeats: int, iters: 
     compiler = None if options is None else (lambda ir: compile_file(ir, options))
     best: dict = {"us": float("inf")}
     for _ in range(repeats):
-        res = run_problem(pdir, compiler=compiler, ref=options is None, gpu=gpu, warmup=5, iters=iters)
+        try:
+            res = run_problem(pdir, compiler=compiler, ref=options is None, gpu=gpu, warmup=5, iters=iters)
+        except CompileError as e:  # the in-process compiler raises what compile.py prints as one line
+            return {"error": str(e)[:60]}
         if not res["ok"]:
             err = next((k.get("error", {}).get("message") for k in res["kernels"] if not k["ok"]), res.get("error"))
             return {"error": str(err or "outputs differ")[:60]}
