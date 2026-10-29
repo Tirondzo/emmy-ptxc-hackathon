@@ -5,7 +5,8 @@ A recipe with more than one spelling asks the ambient `Budget` whether the faste
 `.rn` (so ptxas may fuse mul + add into fma), `div.full` / `rcp.approx` / `sqrt.approx`,
 `tanh.approx`, `sin.approx` on a reduced or a raw argument, `.ftz` on the approximate instructions.
 Everything else is pinned: explicit `fma.rn` inside the polynomial recipes, exp / log / rsqrt through
-the `.approx` instructions (a few ulp), erf as a polynomial at about 1 ulp.
+the `.approx` instructions (2 ulp at the instruction; exp's error grows with |x|, about |x| ulp, as
+`__expf`'s does, since x log2e is rounded before `ex2`), erf as a polynomial at about 1 ulp.
 
 A recipe takes the result type and its arguments already converted to it. A `raw` recipe takes
 the arguments as they come and converts what it needs: comparisons unify their operands and

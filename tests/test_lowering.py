@@ -188,3 +188,29 @@ class TestHalf:
         ptx = lowered(load("v", "x"), Let("p", BinaryExpr(">", Var("v"), Literal(0.0, "float"))),
                       Assign("w", Op("where"), ("p", "v", "v"), dtype=D.F16), write("out", "w"), args=[self.X, self.OUT])
         assert re.search(r"setp\.gt\.f32 %p\d+, %f\d+, 0f00000000;", ptx) and not re.search(r"setp\.\w+\.f16", ptx)
+
+
+class TestConversions:
+    @pytest.mark.parametrize(("left", "right"), [("u", "s"), ("s", "u")])
+    def test_mixed_signs_compare_unsigned(self, left: str, right: str) -> None:
+        """C's usual arithmetic conversions: at one width unsigned wins, whichever side it is on."""
+        ptx = lowered(load("u", "x", dtype=D.U32), load("s", "y", dtype=D.I32), Let("c", BinaryExpr("<", Var(left), Var(right))),
+                      write("out", "c"), args=[arg("x", "i32"), arg("y", "i32"), arg("out", "bool")])
+        assert "setp.lt.u32" in ptx and "setp.lt.s32" not in ptx
+
+
+class TestSmem:
+    def test_declared_once_in_an_unrolled_loop(self) -> None:
+        """A `Smem` met in every copy of a straight loop is one `__shared__` array: declared once, rebound each time."""
+        scratch = Smem("scratch", (32,), "float")
+        loop = Loop(axis=Axis("k", Dim(2)), body=(
+            scratch, Load(names=("v",), input="scratch", index=(Var("a0"),), dtype=None),
+            Assign("w", Op("add"), ("v", "v"), dtype=D.F32),
+            Write(output="scratch", index=(Var("a0"),), values=("w",), value_dtype=None, atomic=False, swizzle="NONE")), unroll=True)
+        ptx = lowered(loop, args=[OUT])
+        assert ptx.count(".shared .align 4 .b8 scratch[128];") == 1
+        assert len(re.findall(r"mov\.u32 %r\d+, scratch;", ptx)) == 2
+
+    def test_another_shape_under_the_same_name_is_refused(self) -> None:
+        with pytest.raises(InvalidKernel, match="scratch"):
+            lowered(Smem("scratch", (32,), "float"), Smem("scratch", (64,), "float"), args=[OUT])

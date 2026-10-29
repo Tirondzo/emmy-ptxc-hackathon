@@ -139,6 +139,8 @@ class Kernel:
             if spec is None:
                 raise InvalidKernel(f"meta.json has no kernel with entry {op.name!r}")
             args = {a["name"]: a for a in spec["args"]}
+            if scalars := [n for n in spec["arg_order"] if args[n].get("scalar")]:
+                raise Unsupported(f"scalar parameters {scalars}: only serial axes pass values, every other parameter is a buffer")
             params = tuple(
                 Buffer(identifier(n), tuple(args[n]["shape"]), storable(ty_of(args[n]["dtype"]))) for n in spec["arg_order"]
             )

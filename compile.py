@@ -15,8 +15,8 @@ def unroll(value: str) -> str | int:
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="compile.py",
-                                 usage="python compile.py path/to/kernel.ir.json [--unroll MODE] [--precision MODE] > out.ptx",
-                                 description="Emmy Kernel IR -> PTX. meta.json is read from next to the IR.")
+                                 description="Emmy Kernel IR -> PTX on stdout. meta.json is read from next to the IR.",
+                                 epilog="example: python compile.py problems/r01_array_sum/k_sum_1_reduce.ir.json > out.ptx")
     ap.add_argument("ir", help="the kernel's .ir.json")
     ap.add_argument("--unroll", type=unroll, default="auto", metavar="auto|none|force|QUOTA",
                     help="loop unrolling: the IR's hints and the compiler's policy (default), no loop unrolled, "
