@@ -342,7 +342,7 @@ OPEN += [
 ]
 
 
-# ---- the demo (tests/demo_julia.py): a Julia set, 32 steps of z = z^2 + c unrolled into one pointwise kernel
+# ---- the demo (tests/julia_demo): a Julia set, 32 steps of z = z^2 + c unrolled into one pointwise kernel
 JULIA = """def julia(x, y, steps=32, cr=-0.835, ci=-0.2321):
     n = 0
     for _ in range(steps):
