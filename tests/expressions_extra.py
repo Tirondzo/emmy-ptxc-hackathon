@@ -340,3 +340,29 @@ OPEN += [
     spec("m50_f16_mm", "torch.randn(128, 256, dtype=torch.float16) @ torch.randn(256, 128, dtype=torch.float16)",
          lambda a, b: [mm(a, b).astype(H)], **F16_REDUCE),
 ]
+
+
+# ---- the demo (tests/demo_julia.py): a Julia set, 32 steps of z = z^2 + c unrolled into one pointwise kernel
+JULIA = """def julia(x, y, steps=32, cr=-0.835, ci=-0.2321):
+    n = 0
+    for _ in range(steps):
+        xx, yy = x * x, y * y
+        n = n + (xx + yy < 4).float()
+        x, y = xx - yy + cr, 2 * x * y + ci
+    return n
+re = torch.randn(720, 1280); im = torch.randn(720, 1280)
+julia(re, im)"""
+
+
+def julia(x, y, steps=32, cr=-0.835, ci=-0.2321):
+    """The same steps in f32; with no fma contraction on either side every op rounds alike, so the check is exact."""
+    n = np.zeros_like(x)
+    with np.errstate(over="ignore", invalid="ignore"):  # escaped points overflow to inf, then NaN; NaN < 4 is False
+        for _ in range(steps):
+            xx, yy = x * x, y * y
+            n = n + (xx + yy < 4).astype(F)
+            x, y = xx - yy + F(cr), F(2) * x * y + F(ci)
+    return n
+
+
+OPEN += [spec("p99_julia", JULIA, lambda re, im: [julia(re, im)], **EXACT)]

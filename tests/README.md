@@ -8,6 +8,7 @@ repo checked out next to this one); our own problems live in `tests/problems`.
 ```
 tests/
   gpu_runner.py          the local runner (CLI and library): ptxas + CUDA driver API
+  demo_julia.py          a Julia set: emmy's 32-step pointwise kernel compiled by ptxc, drawn to a PNG, checked against numpy
   conftest.py            pytest options: --problems DIR, --compiler PATH, --repeat N
   test_problems.py       one test per problem folder, end to end
   test_contract.py       the CLI contract: stdout is ASCII PTX, entry name, arg_order, determinism, speed,
@@ -63,6 +64,20 @@ inputs modified by the kernel, and outputs that differ between repeated launches
 not counted as a failure when the kernel accumulates with atomics). For every checked output it
 also prints how much precision was given away: the largest distance from the expected value in
 f32 ulps, and the share of the tolerance (`atol + rtol * |expected|`) the worst element used.
+
+## Demo
+
+`demo_julia.py` draws a Julia set with a kernel nobody wrote by hand. The torch code is a helper
+with a 32-step Python loop of `z = z^2 + c`; emmy unrolls it into one pointwise kernel, about 280
+f32 operations and 32 compares per pixel (`problems/p99_julia`). ptxc compiles it, the runner
+launches it on a 720x1280 grid of the complex plane, and the script checks every pixel against
+numpy, runs emmy's own CUDA on the same grid, writes `julia.png` (standard library only) and prints
+a preview in the terminal. The test of `p99_julia` checks the same kernel exactly on seeded inputs.
+
+```
+python tests/demo_julia.py
+python tests/demo_julia.py --out pic.png
+```
 
 ## Hacks for the hidden set
 
