@@ -16,13 +16,13 @@ kernel.ir.json + meta.json -> load -> lower -> render -> PTX
 
 | Stage | Module | Owns | Must not |
 |---|---|---|---|
-| load | `ir.py` | emmy's object model (the only module that imports emmy); the launch config and the tolerance from meta.json | interpret statements |
-| lower | `lower/` | core business logic. One rule per statement kind, names and scopes, expression trees | spell PTX text, pick registers or labels |
-| ops | `ops.py` | legalization of elementwise ops and every numeric choice, including the one the tolerance leaves open (`Numerics`) | know which statement used the op |
-| build | `ptx/builder.py` | registers, labels, structured control flow | know the IR |
-| render | `ptx/printer.py` | PTX layout | make decisions |
-| config | `config.py` | every choice made rather than read from the IR: the `Target` (sm, ISA version, warp, launch limits) and the numeric conventions (`HUGE`, `IDENTITY`); for the developer, never an option | hold opcode text, or a recipe's own numbers |
-| context | `context.py` | the ambient `Lowering` for rules and recipes alike: `lowering()`, `options()`, `target()`, `trace()` | hold state of its own |
+| load | [`ir.py`](./ptxc/ir.py) | emmy's object model (the only module that imports emmy); the launch config and the tolerance from meta.json | interpret statements |
+| lower | [`lower/`](./ptxc/lower/) | core business logic. One rule per statement kind, names and scopes, expression trees | spell PTX text, pick registers or labels |
+| ops | [`ops.py`](./ptxc/ops.py) | legalization of elementwise ops and every numeric choice, including the one the tolerance leaves open (`Budget`) | know which statement used the op |
+| build | [`ptx/builder.py`](./ptxc/ptx/builder.py) | registers, labels, structured control flow | know the IR |
+| render | [`ptx/printer.py`](./ptxc/ptx/printer.py) | PTX layout | make decisions |
+| config | [`config.py`](./ptxc/config.py) | every choice made rather than read from the IR: the `Target` (sm, ISA version, warp, launch limits) and the numeric conventions (`HUGE`, `IDENTITY`); for the developer, never an option | hold opcode text, or a recipe's own numbers |
+| context | [`context.py`](./ptxc/context.py) | the ambient `Lowering` for rules and recipes alike: `lowering()`, `options()`, `target()`, `trace()` | hold state of its own |
 
 `ptx/` knows PTX and nothing about Emmy. Everything in between speaks the IR's field
 vocabulary (`s.body`, `s.index`) and the PTX layer's operands.
@@ -31,7 +31,7 @@ We avoid pre-pass analysis to simplify the solution and overall approach to arch
 The IR and meta.json fix every choice correctness depends on. What they leave open is pinned
 once: the machine and the identities in `config.py`, the recipes in `ops.py`. The rounding is the
 one choice meta.json decides indirectly: its `rtol` / `atol` say how much a result may move, and
-`ops.Numerics` spends part of that on the faster spellings.
+`ops.Budget` spends part of that on the faster spellings.
 
 ## Contracts
 
@@ -73,7 +73,7 @@ one choice meta.json decides indirectly: its `rtol` / `atol` say how much a resu
 | Launch limits | a block beyond `Target.max_block` or `smem_bytes` beyond `Target.max_smem` is `InvalidKernel` at compile time, not a launch failure | `config.Target.check` |
 | Rasterization | ignored for now. Doesn't affect correctness, only cache hits | `control.tile` |
 | Loop unrolling | the one performance decision, between correct programs only (same order, same barriers). Three shapes: straight (no loop, the axis a constant), rolled, partial (`factor` copies per iteration, then the known remainder as copies or a tail loop). A loop the IR marks `unroll=True` goes straight within the quota, else by the largest divisor of its trip count; an unmarked loop goes straight when small, else by the compiler's factor. The quota is measured on the nest: `expansion` predicts what nested loops become, so an outer loop is decided knowing its body's size, as a bottom-up pass would, in the one pass. The trip count of `for i in tid..N:T` is `N / T` for every thread when the Tile axis `tid` has extent <= T and T divides N. Copies bind the axis to a constant or to `Bound(var, j * step)`, which `expr.affine` folds into displacements, so an unrolled body is loads and FMAs off one base register (binding through an `add` instead costs 14% on the attention kernel) | `loops.py`, `options.py` |
-| Accumulator seed | a `seed=True` loop declares each Accum of its *own* body (not of nested blocks) at its identity, in the enclosing scope, before opening its own; an outer name of the same spelling is shadowed, not reset | `control.seed_accumulators` |
+| Accumulator seed | a `seed=True` loop declares each Accum of its *own* body (not of nested blocks) at its identity, in the enclosing scope, before opening its own; an outer name of the same spelling is shadowed, not reset | `loops.seed_accumulators` |
 | Accum | `name <- op(base or name, value)`, `op` through emmy's alias map (`amax` is `maximum`): online softmax rescales the accumulator and passes it as `base` | `compute.accum` |
 | Identities | `config.IDENTITY` by canonical op; a maximum seeds at `-HUGE`, emmy's `-1e30` rather than `-inf`, so online softmax never sees `inf - inf = NaN`; `HUGE` is the one number to change (`math.inf` for IEEE) | `ir.op_identity` |
 | Implicit names | `lane = tid & (warp - 1)`, `warp = tid >> log2 warp`, from `Target.warp`, bound in the prologue | `lowerer.prologue` |
