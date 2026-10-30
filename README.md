@@ -14,11 +14,18 @@ python compile.py path/to/kernel.ir.json > out.ptx
 
 ## Short description (human-friendly)
 > [!NOTE]
-> This is the [`main`](https://github.com/Tirondzo/emmy-ptxc-hackathon/tree/main) branch: a balance of required correctness, simplicity and performance, without non-required [`extra`](https://github.com/Tirondzo/emmy-ptxc-hackathon/tree/extra) features.
+> This is the [`extra`](https://github.com/Tirondzo/emmy-ptxc-hackathon/tree/extra) branch: [`main`](https://github.com/Tirondzo/emmy-ptxc-hackathon/tree/main) plus non-required features, demonstrating the compiler's extensibility.
+>
+> [`main`](https://github.com/Tirondzo/emmy-ptxc-hackathon/tree/main): a balance of required correctness, simplicity and performance, without the extras.
 >
 > [`simple`](https://github.com/Tirondzo/emmy-ptxc-hackathon/tree/simple): correctness only, no performance optimizations or trade-offs.
->
-> [`extra`](https://github.com/Tirondzo/emmy-ptxc-hackathon/tree/extra) extends [`main`](https://github.com/Tirondzo/emmy-ptxc-hackathon/tree/main) with more features, demonstrating the compiler's extensibility.
+
+### What `extra` adds
+
+- Tensor cores: emmy's f16 matmul through `cp.async` into swizzled slabs, `ldmatrix` and `mma.sync`, within 3% of emmy's CUDA. One new rule module, [`fragments.py`](./ptxc/lower/fragments.py).
+- f64 transcendentals: exp, log, sin, cos, tanh, erf and pow as `fma.rn.f64` series, 1 to 3 ulp against numpy ([test_f64.py](./tests/test_f64.py)).
+- `Select`, `FlatIndex` and the bitwise index operators: starred nodes no open problem uses.
+- A [Julia set demo](./tests/julia_demo/README.md): a 32-step loop emmy unrolls into one pointwise kernel, compiled by ptxc and drawn as a picture.
 
 
 ### Correctness
