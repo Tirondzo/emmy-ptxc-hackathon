@@ -16,12 +16,12 @@ kernel.ir.json + meta.json -> load -> lower -> render -> PTX
 
 | Stage | Module | Owns | Must not |
 |---|---|---|---|
-| load | `ir.py` | emmy's object model (the only module that imports emmy); the launch config from meta.json | interpret statements |
-| lower | `lower/` | core business logic. One rule per statement kind, names and scopes, expression trees | spell PTX text, pick registers or labels |
-| ops | `ops.py` | legalization of elementwise ops and every numeric choice | know which statement used the op |
-| build | `ptx/builder.py` | registers, labels, structured control flow | know the IR |
-| render | `ptx/printer.py` | PTX layout | make decisions |
-| config | `config.py` | every choice made rather than read from the IR: the `Target` (sm, ISA version, warp, launch limits) and the numeric conventions (`HUGE`, `IDENTITY`); for the developer, never an option | hold opcode text, or a recipe's own numbers |
+| load | [`ir.py`](./ptxc/ir.py) | emmy's object model (the only module that imports emmy); the launch config from meta.json | interpret statements |
+| lower | [`lower/`](./ptxc/lower/) | core business logic. One rule per statement kind, names and scopes, expression trees | spell PTX text, pick registers or labels |
+| ops | [`ops.py`](./ptxc/ops.py) | legalization of elementwise ops and every numeric choice | know which statement used the op |
+| build | [`ptx/builder.py`](./ptxc/ptx/builder.py) | registers, labels, structured control flow | know the IR |
+| render | [`ptx/printer.py`](./ptxc/ptx/printer.py) | PTX layout | make decisions |
+| config | [`config.py`](./ptxc/config.py) | every choice made rather than read from the IR: the `Target` (sm, ISA version, warp, launch limits) and the numeric conventions (`HUGE`, `IDENTITY`); for the developer, never an option | hold opcode text, or a recipe's own numbers |
 
 `ptx/` knows PTX and nothing about Emmy. Everything in between speaks the IR's field
 vocabulary (`s.body`, `s.index`) and the PTX layer's operands.
